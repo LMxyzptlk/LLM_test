@@ -102,9 +102,11 @@ MODEL_CFG_PARAMS = dict(_cfg["model_cfg_params"])
 
 # 数据集生成配置
 DATASET_TYPES = _cfg["dataset_types"]
-RAW_GSM_PATH = _cfg["raw_gsm_path"]
-RAW_SHAREGPT_PATH = _cfg["raw_sharegpt_path"]
-RAW_SWEBENCH_PATH = _cfg["raw_swebench_path"]
+# 原始数据集路径：相对路径以脚本所在目录为基准解析
+_base = SCRIPT_DIR
+RAW_GSM_PATH = _cfg["raw_gsm_path"] if os.path.isabs(_cfg["raw_gsm_path"]) or not _cfg["raw_gsm_path"] else os.path.join(_base, _cfg["raw_gsm_path"])
+RAW_SHAREGPT_PATH = _cfg["raw_sharegpt_path"] if os.path.isabs(_cfg["raw_sharegpt_path"]) or not _cfg["raw_sharegpt_path"] else os.path.join(_base, _cfg["raw_sharegpt_path"])
+RAW_SWEBENCH_PATH = _cfg["raw_swebench_path"] if os.path.isabs(_cfg["raw_swebench_path"]) or not _cfg["raw_swebench_path"] else os.path.join(_base, _cfg["raw_swebench_path"])
 # ============================================================
 
 # 路径常量
@@ -359,17 +361,29 @@ def generate_dataset(dataset_type, input_len, concurrency, pfx=None):
 
 
 def bind_dataset(ds_name):
-    """ln -sf {ds_name} -> test.jsonl / train.jsonl (在 DATASET_DIR 下).
+    """ln -sf {ds_name} -> test.jsonl / train.jsonl (在脚本目录和 ais_bench 期望路径下)。
 
-    ais_bench 启动时会检查 train.jsonl 是否存在(即使不实际跑它),
-    这里也一并软链到同一个数据集文件, 避免报错。
+    ais_bench 内部会去 AIS_BENCH_ROOT/datasets/gsm8k/ 下找 test.jsonl 和 train.jsonl，
+    这里同时软链到脚本目录和该路径，避免 FileNotFoundError。
     """
+    ds_path = os.path.join(DATASET_DIR, ds_name)
+    # 脚本目录下的软链
     for link_name in ("test.jsonl", "train.jsonl"):
         link_path = os.path.join(DATASET_DIR, link_name)
         if os.path.islink(link_path) or os.path.exists(link_path):
             os.remove(link_path)
         os.symlink(ds_name, link_path)
         print("  [ln ] {} -> {}".format(ds_name, link_name))
+
+    # ais_bench 期望路径：AIS_BENCH_ROOT/datasets/gsm8k/test.jsonl
+    gsm8k_dir = os.path.join(AIS_BENCH_ROOT, "datasets", "gsm8k")
+    os.makedirs(gsm8k_dir, exist_ok=True)
+    for link_name in ("test.jsonl", "train.jsonl"):
+        link_path = os.path.join(gsm8k_dir, link_name)
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            os.remove(link_path)
+        os.symlink(ds_path, link_path)
+        print("  [ln ] {} -> {}".format(ds_path, link_path))
 
 
 def run_ais_bench():
