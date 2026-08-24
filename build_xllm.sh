@@ -1,11 +1,22 @@
 #!/bin/bash
 # xllm 自动拉取最新代码并编译脚本
 # 用法: bash build_xllm.sh [branch]
+# 定时任务: crontab -e 添加 0 5 * * * bash /export/home/ext.liaopeiyi1/lpy/build_xllm.sh >> /export/home/ext.liaopeiyi1/lpy/build_cron.log 2>&1
 
 set -e
 
 BRANCH="${1:-release/v0.11.0}"
 XLLM_DIR="/export/home/ext.liaopeiyi1/lpy/xllm"
+LOCK_FILE="/tmp/build_xllm.lock"
+CRON_LOG="/export/home/ext.liaopeiyi1/lpy/build_cron.log"
+
+# 防重入：已有编译在跑则跳过
+if [ -f "$LOCK_FILE" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 已有编译进程运行中, 跳过本次定时任务"
+    exit 0
+fi
+trap "rm -f $LOCK_FILE" EXIT
+touch "$LOCK_FILE"
 
 echo "========================================="
 echo " xllm 自动编译脚本"
