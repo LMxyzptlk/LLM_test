@@ -813,10 +813,13 @@ def main():
         key = (r.get("dataset_type", "sharegpt"), r["input_len"], r["pfx"])
         groups.setdefault(key, []).append(r)
 
+    # 时间戳，避免覆盖之前的结果
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+
     for (dt, input_len, pfx), group_results in groups.items():
         pfx_tag = "_pfx{}".format(pfx) if pfx else ""
         group_path = os.path.join(
-            RUN_CWD, "性能测试结果_{}_in{}{}.xlsx".format(dt, input_len, pfx_tag)
+            RUN_CWD, "性能测试结果_{}_in{}{}_{}.xlsx".format(dt, input_len, pfx_tag, timestamp)
         )
         write_excel(group_results, out_path=group_path)
 
