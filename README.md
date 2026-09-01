@@ -2,6 +2,16 @@
 
 ## 版本历史
 
+### v1.0.2 — 2026-08-31
+
+- **新增 `gen_datasets.py`**：提前批量生成压测数据集
+  - 读取同一个 `run_perf.cfg`，无需额外配置
+  - 按 `dataset_types × input_len × concurrencies × pfx` 笛卡尔积生成
+  - 已存在的数据集自动跳过（幂等，可重复跑）
+  - 支持 `--dry-run` 只打印计划不实际执行
+  - GSM/ShareGPT/SWE-bench 全支持，原始路径从 cfg 读取
+  - 生成到脚本同目录，`run_perf.py` 跑的时候直接用
+
 ### v1.0.1 — 2026-08-24
 
 - **run_perf.py**
@@ -31,6 +41,7 @@
 |------|------|
 | `run_perf.py` | ais_bench 自动化性能测试脚本 |
 | `run_perf.cfg` | 配置文件（所有可修改参数外置） |
+| `gen_datasets.py` | 提前批量生成压测数据集（准备环境用） |
 | `process_dataset.py` | 数据集制作脚本（GSM/ShareGPT/SWE-bench） |
 | `xllm自动化性能测试.md` | 完整使用文档 |
 
@@ -40,7 +51,11 @@
 # 1. 编辑配置
 vim run_perf.cfg
 
-# 2. 运行测试
+# 2. （可选）提前批量生成数据集
+python3 gen_datasets.py --dry-run   # 先看计划
+python3 gen_datasets.py             # 实际生成
+
+# 3. 运行测试
 python3 run_perf.py --cases cases.json
 
 # 或简易模式
