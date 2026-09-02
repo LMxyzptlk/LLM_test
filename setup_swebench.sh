@@ -26,15 +26,13 @@ HOST_IP=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="u
 HOST_PORT=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("host_port",""))')
 API_KEY=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("api_key","dummy"))')
 
-if [ -z "$MODEL_NAME" ]; then
-    echo "ERROR: run_perf.cfg 里 model_cfg_params.model 为空"
-    exit 1
+# 环境准备阶段不强制要求模型配置；真正需要写入模型配置时再检查
+if [ -n "$MODEL_NAME" ] && [ -n "$HOST_IP" ] && [ -n "$HOST_PORT" ]; then
+    API_URL="http://${HOST_IP}:${HOST_PORT}/v1"
+else
+    API_URL=""
+    echo "⚠️  run_perf.cfg 里 model_cfg_params.model / host_ip / host_port 未完整配置，先跳过模型配置写入"
 fi
-if [ -z "$HOST_IP" ] || [ -z "$HOST_PORT" ]; then
-    echo "ERROR: run_perf.cfg 里 model_cfg_params.host_ip / host_port 为空"
-    exit 1
-fi
-API_URL="http://${HOST_IP}:${HOST_PORT}/v1"
 
 # ============ 第 1 步:检查/安装 Docker ============
 echo "=== 1. 检查 Docker ==="
@@ -241,12 +239,16 @@ fi
 echo "=== 7. 配置模型 ==="
 CONFIG_FILE="$AIS_BENCH_DIR/ais_bench/configs/swe_bench_examples/mini_swe_agent_swe_bench_lite.py"
 if [ -f "$CONFIG_FILE" ]; then
-    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
-    sed -i "s|model=\".*\"|model=\"$MODEL_NAME\"|" "$CONFIG_FILE"
-    sed -i "s|url=\".*\"|url=\"$API_URL\"|" "$CONFIG_FILE"
-    sed -i "s|api_key=\".*\"|api_key=\"$API_KEY\"|" "$CONFIG_FILE"
-    echo "✅ 模型配置已更新:"
-    grep -E 'model=|url=|api_key=' "$CONFIG_FILE" | head -5
+    if [ -n "$MODEL_NAME" ] && [ -n "$API_URL" ]; then
+        cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+        sed -i "s|model=\".*\"|model=\"$MODEL_NAME\"|" "$CONFIG_FILE"
+        sed -i "s|url=\".*\"|url=\"$API_URL\"|" "$CONFIG_FILE"
+        sed -i "s|api_key=\".*\"|api_key=\"$API_KEY\"|" "$CONFIG_FILE"
+        echo "✅ 模型配置已更新:"
+        grep -E 'model=|url=|api_key=' "$CONFIG_FILE" | head -5
+    else
+        echo "⚠️  模型配置不完整，跳过模型配置写入"
+    fi
 else
     echo "⚠️  配置文件 $CONFIG_FILE 不存在"
 fi
