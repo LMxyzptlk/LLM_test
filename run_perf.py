@@ -4,10 +4,13 @@
 ais_bench 自动性能测试脚本 (JSON 用例驱动)
 
 用法:
-    # 主模式: 用 JSON 用例文件驱动, 支持多数据集类型/输入长度/输出长度/并发/request_rate/pfx 组合
+    # performance 模式: 用 JSON 用例文件驱动, 支持多数据集类型/输入长度/输出长度/并发/request_rate/pfx 组合
     python3 run_perf.py --cases cases.json
 
-    # 简易模式: 直接命令行指定 (向后兼容)
+    # agent 模式: 跑原生 SWE-bench, 支持 lite / verified / full / multilingual
+    python3 run_perf.py --mode agent --agent-dataset lite --agent-count 10
+
+    # performance 简易模式: 直接命令行指定 (向后兼容)
     python3 run_perf.py -i 32768 -c 1 8 16 --max-out-len 1024 --request-rate 0.5
     python3 run_perf.py -i 32768 -c 1 8 16 --dataset-type gsm sharegpt  # 多数据集类型
     python3 run_perf.py -i 32768 -c 1 8 16 --skip-run       # 只解析已有输出
@@ -64,6 +67,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(SCRIPT_DIR, "run_perf.cfg")
 
 _DEFAULT_CFG = {
+    "mode": "performance",
+    "agent_dataset": "lite",
+    "agent_count": 1,
+    "agent_step_limit": 200,
+    "agent_work_dir": "outputs/agent",
     "input_len": [32768],
     "concurrencies": [1, 8, 16],
     "default_max_out_len": None,
@@ -103,6 +111,12 @@ def _load_cfg():
 
 
 _cfg = _load_cfg()
+
+RUN_MODE = _cfg.get("mode", "performance")
+AGENT_DATASET = _cfg.get("agent_dataset", "lite")
+AGENT_COUNT = int(_cfg.get("agent_count", 1))
+AGENT_STEP_LIMIT = int(_cfg.get("agent_step_limit", 200))
+AGENT_WORK_DIR = _cfg.get("agent_work_dir", "outputs/agent")
 
 INPUT_LEN = _cfg["input_len"]
 CONCURRENCIES = _cfg["concurrencies"]
@@ -246,6 +260,229 @@ def prepare_raw_datasets(dataset_types):
             )
         else:
             raise RuntimeError("未知数据集类型: {}".format(dt))
+
+# -------------------- Agent 模式: 原生 SWE-bench --------------------
+_AGENT_DATASET_HF_ID = {
+    "lite": "princeton-nlp/SWE-Bench_Lite",
+    "verified": "princeton-nlp/SWE-Bench_Verified",
+    "full": "princeton-nlp/SWE-Bench",
+    "multilingual": "SWE-bench/SWE-bench_Multilingual",
+}
+
+
+def _import_or_none(name):
+    try:
+        return __import__(name)
+    except Exception:
+        return None
+
+
+def _ensure_agent_environment():
+    '''确保 agent 模式需要的 mini-swe-agent / swebench 已安装。'''
+    missing = []
+    if _import_or_none("minisweagent") is None:
+        missing.append("minisweagent")
+    if _import_or_none("swebench") is None:
+        missing.append("swebench")
+    if not missing:
+        print("  [agent] mini-swe-agent / swebench 环境已就绪")
+        return
+
+    if not AUTO_PREPARE:
+        raise RuntimeError("agent 模式缺少依赖 {}，且 auto_prepare=false".format(missing))
+
+    print("  [agent] 缺少依赖 {}，开始自动安装".format(missing))
+    if "minisweagent" in missing:
+        repo_dir = os.path.join(SCRIPT_DIR, "third_party", "mini-swe-agent")
+        if not os.path.isdir(repo_dir):
+            os.makedirs(os.path.dirname(repo_dir), exist_ok=True)
+            _run_checked(
+                ["git", "clone", "--depth", "1",
+                 "https://gh-proxy.com/https://github.com/AISBench/mini-swe-agent.git", repo_dir],
+                label="git clone mini-swe-agent",
+            )
+        _run_checked(
+            [sys.executable, "-m", "pip", "install", "-e", repo_dir],
+            cwd=repo_dir,
+            label="pip install mini-swe-agent",
+        )
+    if "swebench" in missing:
+        repo_dir = os.path.join(SCRIPT_DIR, "third_party", "SWE-bench")
+        if not os.path.isdir(repo_dir):
+            os.makedirs(os.path.dirname(repo_dir), exist_ok=True)
+            _run_checked(
+                ["git", "clone", "--branch", "v4.1.0", "--depth", "1",
+                 "https://gh-proxy.com/https://github.com/SWE-bench/SWE-bench.git", repo_dir],
+                label="git clone SWE-bench",
+            )
+        _run_checked(
+            [sys.executable, "-m", "pip", "install", "-e", repo_dir],
+            cwd=repo_dir,
+            label="pip install SWE-bench",
+        )
+
+
+def _load_agent_instance_ids(dataset_name, count):
+    '''按数据集原始顺序取前 count 条 instance_id；count=0 表示全部。'''
+    if dataset_name not in _AGENT_DATASET_HF_ID:
+        raise ValueError(
+            "agent_dataset 仅支持 {}，当前: {}".format(
+                sorted(_AGENT_DATASET_HF_ID), dataset_name
+            )
+        )
+    from datasets import load_dataset
+
+    hf_id = _AGENT_DATASET_HF_ID[dataset_name]
+    print("  [agent] 加载数据集: {}".format(hf_id))
+    ds = load_dataset(hf_id, split="test")
+    ids = list(ds["instance_id"])
+    total = len(ids)
+    if count is None or count <= 0:
+        selected = ids
+    else:
+        selected = ids[:count]
+    print("  [agent] 数据集总数={}，本次选择={}，取前 {} 条".format(total, len(selected), len(selected)))
+    return selected
+
+
+def _agent_filter_regex(instance_ids):
+    '''把 instance_id 列表转成精确匹配 regex。'''
+    import re as _re
+    if not instance_ids:
+        raise RuntimeError("agent 模式没有选中任何 instance")
+    return "^(?:" + "|".join(_re.escape(x) for x in instance_ids) + ")$"
+
+
+def _build_agent_config(dataset_name, instance_ids, step_limit):
+    '''生成原生 SWE-bench 的 ais_bench 配置文件。'''
+    from string import Template
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    cfg_dir = os.path.join(SCRIPT_DIR, "outputs", "agent_configs")
+    os.makedirs(cfg_dir, exist_ok=True)
+    cfg_path = os.path.join(
+        cfg_dir,
+        "swebench_agent_{}_{}_{}.py".format(dataset_name, len(instance_ids), timestamp),
+    )
+
+    model_name = MODEL_CFG_PARAMS.get("model", "")
+    host_ip = MODEL_CFG_PARAMS.get("host_ip", "")
+    host_port = MODEL_CFG_PARAMS.get("host_port", "")
+    if not model_name or not host_ip or not host_port:
+        raise RuntimeError(
+            "agent 模式需要在 model_cfg_params 里配置 model / host_ip / host_port"
+        )
+    api_url = "http://{}:{}/v1".format(host_ip, host_port)
+    api_key = MODEL_CFG_PARAMS.get("api_key", "dummy") or "dummy"
+    filter_regex = _agent_filter_regex(instance_ids)
+
+    template = Template('''from ais_bench.benchmark.datasets import SWEBenchDataset
+from ais_bench.benchmark.partitioners import NaivePartitioner
+from ais_bench.benchmark.runners import LocalRunner
+from ais_bench.benchmark.tasks import SWEBenchInferTask, SWEBenchEvalTask
+from ais_bench.benchmark.summarizers import SWEBenchSummarizer
+
+STEP_LIMIT = $step_limit
+
+models = [
+    dict(
+        attr="local",
+        abbr="swebench",
+        type="LiteLLMChat",
+        model="$model_name",
+        api_key="$api_key",
+        url="$api_url",
+        batch_size=1,
+        max_out_len=16384,
+        generation_kwargs=dict(
+            max_tokens=32768,
+            temperature=0.2,
+            timeout=600,
+        ),
+    )
+]
+
+datasets = [
+    dict(
+        type=SWEBenchDataset,
+        abbr="swebench_$dataset_name",
+        path="",
+        name="$dataset_name",
+        split="test",
+        filter_spec="$filter_regex",
+        shuffle=False,
+        step_limit=STEP_LIMIT,
+    )
+]
+
+summarizer = dict(
+    attr="accuracy",
+    type=SWEBenchSummarizer,
+)
+
+infer = dict(
+    partitioner=dict(type=NaivePartitioner),
+    runner=dict(
+        type=LocalRunner,
+        task=dict(type=SWEBenchInferTask),
+    ),
+)
+
+eval = dict(
+    partitioner=dict(type=NaivePartitioner),
+    runner=dict(
+        type=LocalRunner,
+        task=dict(type=SWEBenchEvalTask),
+    ),
+)
+''')
+    content = template.substitute(
+        step_limit=step_limit,
+        model_name=model_name,
+        api_key=api_key,
+        api_url=api_url,
+        dataset_name=dataset_name,
+        filter_regex=filter_regex,
+    )
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("  [agent] 配置文件: {}".format(cfg_path))
+    return cfg_path
+
+
+def run_agent_mode():
+    '''执行原生 SWE-bench agent 评测。'''
+    print("========== Agent 模式: 原生 SWE-bench ==========")
+    print("数据集 = {}".format(AGENT_DATASET))
+    print("数量 = {}".format("全部" if AGENT_COUNT <= 0 else AGENT_COUNT))
+    print("step_limit = {}".format(AGENT_STEP_LIMIT))
+    print("工作目录 = {}".format(AGENT_WORK_DIR))
+
+    _ensure_agent_environment()
+    instance_ids = _load_agent_instance_ids(AGENT_DATASET, AGENT_COUNT)
+    if not instance_ids:
+        raise RuntimeError("agent 模式没有选中任何 instance")
+    print("  [agent] 选中 instance:")
+    for iid in instance_ids:
+        print("    - {}".format(iid))
+
+    cfg_path = _build_agent_config(AGENT_DATASET, instance_ids, AGENT_STEP_LIMIT)
+    work_dir = os.path.join(SCRIPT_DIR, AGENT_WORK_DIR)
+    os.makedirs(work_dir, exist_ok=True)
+
+    cmd = [
+        "ais_bench",
+        cfg_path,
+        "--mode", "all",
+        "--work-dir", work_dir,
+        "--max-num-workers", "1",
+    ]
+    print("  [agent] CMD: {}".format(" ".join(cmd)))
+    proc = subprocess.run(cmd, cwd=SCRIPT_DIR, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError("ais_bench agent 模式退出码 {}".format(proc.returncode))
+    print("  [agent] 原生 SWE-bench 完成")
+
 
 # 路径常量
 def _find_existing_ais_bench_root():
@@ -925,7 +1162,13 @@ def run_case(case, skip_run=False):
 
 def main():
     ap = argparse.ArgumentParser(description="ais_bench 自动性能测试 (JSON 用例驱动)")
-    ap.add_argument("--cases", help="JSON 用例文件路径 (主模式); 每条 '序号:输入-输出-并发-rate[-pfx]'")
+    ap.add_argument("--cases", help="performance 模式: JSON 用例文件路径")
+    ap.add_argument("--mode", choices=["performance", "agent"], default=None,
+                    help="运行模式: performance=拼接压测数据集, agent=原生 SWE-bench")
+    ap.add_argument("--agent-dataset", choices=sorted(_AGENT_DATASET_HF_ID), default=None,
+                    help="agent 模式: SWE-bench 数据集类型")
+    ap.add_argument("--agent-count", type=int, default=None,
+                    help="agent 模式: 取前 N 条; 0 表示全部")
     # 简易模式 (向后兼容)
     ap.add_argument("-i", "--input-len", type=int, nargs="+", default=None,
                     help="简易模式: 输入长度列表")
@@ -949,7 +1192,18 @@ def main():
     ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
     args = ap.parse_args()
 
-    global EXCEL_PATH, MODEL_CFG_PARAMS
+    global EXCEL_PATH, MODEL_CFG_PARAMS, RUN_MODE, AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
+    if args.mode:
+        RUN_MODE = args.mode
+    if args.agent_dataset:
+        AGENT_DATASET = args.agent_dataset
+    if args.agent_count is not None:
+        AGENT_COUNT = args.agent_count
+
+    if RUN_MODE == "agent":
+        run_agent_mode()
+        return
+
     if args.excel:
         EXCEL_PATH = args.excel
     # 命令行模型配置覆盖脚本默认

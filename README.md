@@ -2,6 +2,33 @@
 
 ## 版本历史
 
+### v1.0.4 — 2026-09-02
+
+- **`run_perf.py` 新增 `agent` 模式**
+  - `mode=performance`：保留原有拼接压测数据集流程
+  - `mode=agent`：直接跑原生 SWE-bench
+- **Agent 模式支持官方数据集**
+  - `lite`
+  - `verified`
+  - `full`
+  - `multilingual`
+- **Agent 模式支持按顺序取前 N 条**
+  - `agent_count=1`：只跑第 1 条
+  - `agent_count=10`：跑前 10 条
+  - `agent_count=0`：跑全部
+- **Agent 模式自动准备环境**
+  - 自动检查 `mini-swe-agent`
+  - 自动检查 `swebench`
+  - 缺失时自动克隆并安装
+- **Agent 模式自动生成原生 SWE-bench 配置**
+  - 自动读取 `run_perf.cfg` 里的模型服务信息
+  - 自动生成 `outputs/agent_configs/` 下的配置文件
+  - 自动调用 `ais_bench --mode all`
+- **新增命令行参数**
+  - `--mode performance|agent`
+  - `--agent-dataset lite|verified|full|multilingual`
+  - `--agent-count N`
+
 ### v1.0.3 — 2026-09-02
 
 - **`run_perf.py` 启动前自动准备环境**
@@ -69,7 +96,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| `run_perf.py` | ais_bench 自动化性能测试脚本，支持自动准备 benchmark 和原始数据集 |
+| `run_perf.py` | ais_bench 自动化测试脚本，支持 performance 压测和 agent 原生 SWE-bench |
 | `run_perf.cfg` | 配置文件（所有可修改参数外置） |
 | `gen_datasets.py` | 提前批量生成压测数据集（准备环境用） |
 | `process_dataset.py` | 数据集制作脚本（GSM/ShareGPT/SWE-bench） |
@@ -81,10 +108,13 @@
 # 1. 编辑配置
 vim run_perf.cfg
 
-# 2. 直接运行；缺失的 benchmark / 原始数据集会自动准备
-python3 run_perf.py --cases cases.json
+# 2. performance 模式：直接运行；缺失的 benchmark / 原始数据集会自动准备
+python3 run_perf.py --mode performance --cases cases.json
 
-# 3. （可选）提前批量生成数据集
+# 3. agent 模式：原生 SWE-bench，取 Lite 前 10 条
+python3 run_perf.py --mode agent --agent-dataset lite --agent-count 10
+
+# 4. （可选）提前批量生成数据集
 python3 gen_datasets.py --dry-run   # 先看计划
 python3 gen_datasets.py             # 实际生成
 
