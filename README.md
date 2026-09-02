@@ -2,6 +2,36 @@
 
 ## 版本历史
 
+### v1.0.3 — 2026-09-02
+
+- **`run_perf.py` 启动前自动准备环境**
+  - 自动检测 `ais_bench` / benchmark 是否已安装
+  - 缺失时自动 clone `AISBench/benchmark`
+  - 自动执行 `pip install -e . --use-pep517`
+  - 可选自动安装 `requirements/api.txt` 和 `requirements/extra.txt`
+  - 已安装则直接跳过，不重复下载/安装
+- **自动准备原始数据集**
+  - GSM8K：缺失时自动下载并解压 `gsm8k.zip`
+  - ShareGPT：缺失时自动下载 `ShareGPT_V3_unfiltered_cleaned_split.json`
+  - SWE-bench：缺失时自动下载 `test-00000-of-00001.parquet`
+  - 只下载本次实际用到的数据集类型
+  - 已存在则直接复用
+- **新增自动准备配置项**
+  - `auto_prepare`
+  - `benchmark_repo`
+  - `benchmark_dir`
+  - `benchmark_ref`
+  - `install_requirements`
+  - `raw_dataset_dir`
+  - `gsm8k_url`
+  - `sharegpt_url`
+  - `swebench_url`
+- **默认下载目录**
+  - 原始数据集默认放在脚本同目录的 `raw_datasets/` 下
+- **保持原有流程不变**
+  - 原始数据准备完成后，继续调用 `process_dataset.py` 生成压测数据集
+  - 已生成的 jsonl 数据集仍然自动跳过
+
 ### v1.0.2 — 2026-08-31
 
 - **新增 `gen_datasets.py`**：提前批量生成压测数据集
@@ -39,7 +69,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| `run_perf.py` | ais_bench 自动化性能测试脚本 |
+| `run_perf.py` | ais_bench 自动化性能测试脚本，支持自动准备 benchmark 和原始数据集 |
 | `run_perf.cfg` | 配置文件（所有可修改参数外置） |
 | `gen_datasets.py` | 提前批量生成压测数据集（准备环境用） |
 | `process_dataset.py` | 数据集制作脚本（GSM/ShareGPT/SWE-bench） |
@@ -51,12 +81,12 @@
 # 1. 编辑配置
 vim run_perf.cfg
 
-# 2. （可选）提前批量生成数据集
+# 2. 直接运行；缺失的 benchmark / 原始数据集会自动准备
+python3 run_perf.py --cases cases.json
+
+# 3. （可选）提前批量生成数据集
 python3 gen_datasets.py --dry-run   # 先看计划
 python3 gen_datasets.py             # 实际生成
-
-# 3. 运行测试
-python3 run_perf.py --cases cases.json
 
 # 或简易模式
 python3 run_perf.py -i 32768 -c 1 8 16 --max-out-len 1024

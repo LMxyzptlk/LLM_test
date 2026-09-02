@@ -36,6 +36,7 @@ JSON 用例文件格式 (序号->用例串 映射):
 输出长度/请求速率/pfx 用命令行 --max-out-len --request-rate --pfx --dataset-type 覆盖。
 
 数据集 jsonl 在脚本所在文件夹下查找。若找不到, 自动调用 process_dataset.py 生成。
+启动前会自动检查 ais_bench benchmark 和本次用到的原始数据集；缺失时自动下载/安装，已存在则跳过。
 输出(request_rate/max_out_len/path/model/host_ip/host_port)写入 vllm_api_general_stream.py。
 最终所有用例结果按 (数据集类型, 输入长度, pfx) 分组写 excel, 保存在执行时的当前文件夹下。
 """
@@ -49,6 +50,8 @@ import re
 import subprocess
 import sys
 import time
+import shutil
+import zipfile
 
 import openpyxl
 from openpyxl.styles import Font, Alignment
@@ -71,6 +74,17 @@ _DEFAULT_CFG = {
     "raw_gsm_path": "",
     "raw_sharegpt_path": "",
     "raw_swebench_path": "",
+
+    # v1.0.3: 启动前自动准备 benchmark 和原始数据集
+    "auto_prepare": True,
+    "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
+    "benchmark_dir": "",
+    "benchmark_ref": "",
+    "install_requirements": True,
+    "raw_dataset_dir": "raw_datasets",
+    "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
+    "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
+    "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet",
 }
 
 
@@ -102,15 +116,139 @@ MODEL_CFG_PARAMS = dict(_cfg["model_cfg_params"])
 
 # 数据集生成配置
 DATASET_TYPES = _cfg["dataset_types"]
-# 原始数据集路径：相对路径以脚本所在目录为基准解析
-_base = SCRIPT_DIR
-RAW_GSM_PATH = _cfg["raw_gsm_path"] if os.path.isabs(_cfg["raw_gsm_path"]) or not _cfg["raw_gsm_path"] else os.path.join(_base, _cfg["raw_gsm_path"])
-RAW_SHAREGPT_PATH = _cfg["raw_sharegpt_path"] if os.path.isabs(_cfg["raw_sharegpt_path"]) or not _cfg["raw_sharegpt_path"] else os.path.join(_base, _cfg["raw_sharegpt_path"])
-RAW_SWEBENCH_PATH = _cfg["raw_swebench_path"] if os.path.isabs(_cfg["raw_swebench_path"]) or not _cfg["raw_swebench_path"] else os.path.join(_base, _cfg["raw_swebench_path"])
-# ============================================================
+
+# v1.0.3: 自动准备配置
+AUTO_PREPARE = bool(_cfg.get("auto_prepare", True))
+BENCHMARK_REPO = _cfg.get("benchmark_repo", "")
+BENCHMARK_REF = _cfg.get("benchmark_ref", "")
+INSTALL_REQUIREMENTS = bool(_cfg.get("install_requirements", True))
+RAW_DATASET_DIR = os.path.join(
+    SCRIPT_DIR,
+    _cfg.get("raw_dataset_dir", "raw_datasets"),
+)
+GSM8K_URL = _cfg.get("gsm8k_url", "")
+SHAREGPT_URL = _cfg.get("sharegpt_url", "")
+SWEBENCH_URL = _cfg.get("swebench_url", "")
+
+_BENCHMARK_DIR_CFG = _cfg.get("benchmark_dir", "")
+BENCHMARK_DIR = (
+    os.path.abspath(_BENCHMARK_DIR_CFG)
+    if os.path.isabs(_BENCHMARK_DIR_CFG)
+    else os.path.join(SCRIPT_DIR, _BENCHMARK_DIR_CFG)
+) if _BENCHMARK_DIR_CFG else os.path.join(SCRIPT_DIR, "benchmark")
+
+# 原始数据集路径：相对路径以脚本所在目录为基准解析；未配置时落到 raw_datasets/
+def _resolve_raw_path(value, default_name):
+    if value:
+        return value if os.path.isabs(value) else os.path.join(SCRIPT_DIR, value)
+    return os.path.join(RAW_DATASET_DIR, default_name)
+
+RAW_GSM_PATH = _resolve_raw_path(
+    _cfg.get("raw_gsm_path", ""),
+    os.path.join("gsm8k", "train.jsonl"),
+)
+RAW_SHAREGPT_PATH = _resolve_raw_path(
+    _cfg.get("raw_sharegpt_path", ""),
+    "ShareGPT_V3_unfiltered_cleaned_split.json",
+)
+RAW_SWEBENCH_PATH = _resolve_raw_path(
+    _cfg.get("raw_swebench_path", ""),
+    os.path.join("swe-bench", "test-00000-of-00001.parquet"),
+)
+
+
+def _run_checked(cmd, cwd=None, label=""):
+    """执行外部命令，失败时抛 RuntimeError。"""
+    print("  [exec] {}".format(" ".join(map(str, cmd))))
+    proc = subprocess.run(cmd, cwd=cwd, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError("{} 退出码 {}: {}".format(label or "命令", proc.returncode, " ".join(map(str, cmd))))
+    return proc
+
+
+def _download_file(url, dest):
+    """下载文件到 dest；已存在且非空则跳过。优先 wget 断点续传。"""
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        print("  [dl ] 已存在: {}".format(dest))
+        return dest
+    os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+    tmp = dest + ".part"
+    print("  [dl ] {} -> {}".format(url, dest))
+    if shutil.which("wget"):
+        cmd = ["wget", "-c", url, "-O", tmp]
+    else:
+        cmd = ["curl", "-fL", "--retry", "3", "--retry-delay", "2", url, "-o", tmp]
+    proc = subprocess.run(cmd, text=True)
+    if proc.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+        raise RuntimeError("下载失败: {} -> {}".format(url, dest))
+    os.replace(tmp, dest)
+    return dest
+
+
+def _ensure_raw_file(path, url, label):
+    """确保单个原始数据文件存在；不存在则自动下载。"""
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        print("  [raw ] {} 已存在: {}".format(label, path))
+        return path
+    if not AUTO_PREPARE:
+        raise RuntimeError("{} 不存在且 auto_prepare=false: {}".format(label, path))
+    if not url:
+        raise RuntimeError("{} 不存在且未配置下载 URL".format(label))
+    _download_file(url, path)
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        raise RuntimeError("{} 下载后仍不可用: {}".format(label, path))
+    print("  [raw ] {} 已下载: {}".format(label, path))
+    return path
+
+
+def _ensure_gsm8k(path):
+    """确保 GSM8K 原始 jsonl 存在；不存在则下载 zip 并解压。"""
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        print("  [raw ] GSM8K 已存在: {}".format(path))
+        return path
+    if not AUTO_PREPARE:
+        raise RuntimeError("GSM8K 不存在且 auto_prepare=false: {}".format(path))
+    if not GSM8K_URL:
+        raise RuntimeError("GSM8K 不存在且未配置 gsm8k_url")
+    os.makedirs(RAW_DATASET_DIR, exist_ok=True)
+    zip_path = os.path.join(RAW_DATASET_DIR, "gsm8k.zip")
+    _download_file(GSM8K_URL, zip_path)
+    print("  [raw ] 解压 GSM8K: {}".format(zip_path))
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(RAW_DATASET_DIR)
+    extracted = os.path.join(RAW_DATASET_DIR, "gsm8k", "train.jsonl")
+    if not os.path.exists(extracted):
+        extracted = os.path.join(RAW_DATASET_DIR, "gsm8k", "test.jsonl")
+    if not os.path.exists(extracted):
+        raise RuntimeError("GSM8K 下载解压后未找到 train.jsonl/test.jsonl")
+    # 用户指定了自定义路径时，软链到解压结果，保持配置语义不变
+    if path != extracted and not os.path.exists(path):
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        os.symlink(extracted, path)
+        print("  [raw ] GSM8K symlink: {} -> {}".format(extracted, path))
+        return path
+    return extracted
+
+
+def prepare_raw_datasets(dataset_types):
+    """按本次实际用到的数据集类型准备原始文件，已存在则跳过。"""
+    global RAW_GSM_PATH, RAW_SHAREGPT_PATH, RAW_SWEBENCH_PATH
+    for dt in dataset_types:
+        if dt == "gsm":
+            RAW_GSM_PATH = _ensure_gsm8k(RAW_GSM_PATH)
+        elif dt == "sharegpt":
+            RAW_SHAREGPT_PATH = _ensure_raw_file(
+                RAW_SHAREGPT_PATH, SHAREGPT_URL, "ShareGPT"
+            )
+        elif dt == "swebench":
+            RAW_SWEBENCH_PATH = _ensure_raw_file(
+                RAW_SWEBENCH_PATH, SWEBENCH_URL, "SWE-bench"
+            )
+        else:
+            raise RuntimeError("未知数据集类型: {}".format(dt))
 
 # 路径常量
-def _find_ais_bench_root():
+def _find_existing_ais_bench_root():
     """定位 ais_bench benchmark 安装根目录。
 
     支持 pip install 和 pip install -e 两种安装方式。
@@ -170,7 +308,67 @@ def _find_ais_bench_root():
         "或脚本在 ais_bench 目录树下运行。"
     )
 
-AIS_BENCH_ROOT = _find_ais_bench_root()
+def _install_benchmark_repo(repo_dir):
+    """安装 ais_bench benchmark 源码仓库。"""
+    if not os.path.isfile(os.path.join(repo_dir, "setup.py")) and not os.path.isfile(os.path.join(repo_dir, "pyproject.toml")):
+        raise RuntimeError("benchmark 目录存在但不是可用源码仓库: {}".format(repo_dir))
+    print("  [bench] 安装 ais_bench: {}".format(repo_dir))
+    _run_checked(
+        [sys.executable, "-m", "pip", "install", "-e", repo_dir, "--use-pep517"],
+        cwd=repo_dir,
+        label="pip install ais_bench",
+    )
+    if INSTALL_REQUIREMENTS:
+        for req_name in ("requirements/api.txt", "requirements/extra.txt"):
+            req_path = os.path.join(repo_dir, req_name)
+            if os.path.isfile(req_path):
+                print("  [bench] 安装依赖: {}".format(req_path))
+                _run_checked(
+                    [sys.executable, "-m", "pip", "install", "-r", req_path],
+                    cwd=repo_dir,
+                    label="pip install {}".format(req_name),
+                )
+
+
+def _clone_benchmark_repo(repo_dir):
+    """克隆 ais_bench benchmark 源码仓库。"""
+    if os.path.isfile(os.path.join(repo_dir, "setup.py")) or os.path.isfile(os.path.join(repo_dir, "pyproject.toml")):
+        print("  [bench] benchmark 源码已存在: {}".format(repo_dir))
+        return
+    if os.path.exists(repo_dir) and os.listdir(repo_dir):
+        raise RuntimeError("benchmark_dir 非空但不是 benchmark 源码: {}".format(repo_dir))
+    os.makedirs(os.path.dirname(os.path.abspath(repo_dir)), exist_ok=True)
+    if not BENCHMARK_REPO:
+        raise RuntimeError("ais_bench 未安装且未配置 benchmark_repo")
+    cmd = ["git", "clone"]
+    if BENCHMARK_REF:
+        cmd += ["--branch", BENCHMARK_REF, "--depth", "1"]
+    else:
+        cmd += ["--depth", "1"]
+    cmd += [BENCHMARK_REPO, repo_dir]
+    print("  [bench] 克隆 ais_bench: {}".format(BENCHMARK_REPO))
+    _run_checked(cmd, label="git clone benchmark")
+
+
+def _ensure_ais_bench_root():
+    """定位或自动安装 ais_bench benchmark。"""
+    try:
+        return _find_existing_ais_bench_root()
+    except Exception as exc:
+        if not AUTO_PREPARE:
+            raise
+        print("  [bench] 未找到已安装的 ais_bench，开始自动准备: {}".format(exc))
+        _clone_benchmark_repo(BENCHMARK_DIR)
+        _install_benchmark_repo(BENCHMARK_DIR)
+        try:
+            return _find_existing_ais_bench_root()
+        except Exception:
+            if os.path.isdir(os.path.join(BENCHMARK_DIR, "benchmark", "configs", "models")):
+                return BENCHMARK_DIR
+            raise
+
+
+AIS_BENCH_ROOT = _ensure_ais_bench_root()
 PROCESS_DATASET_SCRIPT = os.path.join(SCRIPT_DIR, "process_dataset.py")
 MODEL_CFG = os.path.join(
     AIS_BENCH_ROOT,
@@ -801,6 +999,11 @@ def main():
                             "pfx": pfx,
                         })
                         seq += 1
+
+    # ---- v1.0.3: 自动准备本次用到的原始数据集 ----
+    active_dataset_types = sorted({case.get("dataset_type", "sharegpt") for case in cases})
+    print("自动准备 = {}".format("开启" if AUTO_PREPARE else "关闭"))
+    prepare_raw_datasets(active_dataset_types)
 
     # ---- 跑用例 ----
     results = []
