@@ -96,11 +96,63 @@ _DEFAULT_CFG = {
 }
 
 
+def _strip_jsonc_comments(text):
+    """去掉 JSONC 里的 // 和 /* */ 注释，但保留字符串里的 //。"""
+    out = []
+    i = 0
+    n = len(text)
+    in_string = False
+    escaped = False
+
+    while i < n:
+        ch = text[i]
+
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            out.append(" ")
+            continue
+
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                if text[i] == "\n":
+                    out.append("\n")
+                i += 1
+            i += 2
+            out.append(" ")
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
 def _load_cfg():
-    """从 run_perf.cfg 加载配置，合并默认值。"""
+    """从 run_perf.cfg 加载配置，支持 JSONC 注释。"""
     if os.path.exists(CFG_PATH):
         with open(CFG_PATH, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
+            raw = f.read()
+        cfg = json.loads(_strip_jsonc_comments(raw))
     else:
         cfg = {}
     merged = dict(_DEFAULT_CFG)
