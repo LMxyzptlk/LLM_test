@@ -101,6 +101,7 @@
 | `gen_datasets.py` | 提前批量生成压测数据集（准备环境用） |
 | `process_dataset.py` | 数据集制作脚本（GSM/ShareGPT/SWE-bench） |
 | `xllm自动化性能测试.md` | 完整使用文档 |
+| `setup_swebench.sh` | SWE-bench 环境一键配置脚本，`run_perf.py` 的 agent 模式会自动执行 |
 
 ## 快速开始
 

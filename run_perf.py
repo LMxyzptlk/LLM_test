@@ -65,6 +65,7 @@ from openpyxl.styles import Font, Alignment
 # ============================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(SCRIPT_DIR, "run_perf.cfg")
+SETUP_SWEBENCH_SCRIPT = os.path.join(SCRIPT_DIR, "setup_swebench.sh")
 
 _DEFAULT_CFG = {
     "mode": "performance",
@@ -331,6 +332,14 @@ def _import_or_none(name):
 
 def _ensure_agent_environment():
     '''确保 agent 模式需要的 mini-swe-agent / swebench 已安装。'''
+    if AUTO_PREPARE and os.path.isfile(SETUP_SWEBENCH_SCRIPT):
+        print("  [agent] 执行环境配置脚本: {}".format(SETUP_SWEBENCH_SCRIPT))
+        _run_checked(
+            ["bash", SETUP_SWEBENCH_SCRIPT],
+            cwd=SCRIPT_DIR,
+            label="setup_swebench.sh",
+        )
+
     missing = []
     if _import_or_none("minisweagent") is None:
         missing.append("minisweagent")
