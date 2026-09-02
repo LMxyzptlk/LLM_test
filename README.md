@@ -82,7 +82,8 @@
   - 用例串格式 `[dataset_type:]输入-输出-并发-rate[-pfx]`
   - JSON 用例驱动 + 简易模式（笛卡尔积）
   - ais_bench stdout/stderr 直接透传到终端
-  - outputs 和 Excel 统一落在脚本所在目录
+  - 生成的压测数据集统一放在 `datasets/performance/`
+  - 性能测试 Excel 统一放在 `results/performance/`
 
 ### v1.0.0 — 2026-08-21
 

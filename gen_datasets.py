@@ -47,6 +47,11 @@ def main():
     args = ap.parse_args()
 
     cfg = load_cfg()
+    dataset_dir = os.path.join(
+        SCRIPT_DIR,
+        cfg.get("performance_dataset_dir", "datasets/performance"),
+    )
+    os.makedirs(dataset_dir, exist_ok=True)
     dataset_types = cfg.get("dataset_types", ["sharegpt"])
     input_lens = cfg.get("input_len", [32768])
     concurrencies = cfg.get("concurrencies", [1, 8, 16])
@@ -68,7 +73,7 @@ def main():
                 bs = c * 4
                 for pfx in pfx_list:
                     fname = dataset_filename(dt, il, bs, pfx)
-                    fpath = os.path.join(SCRIPT_DIR, fname)
+                    fpath = os.path.join(dataset_dir, fname)
                     if os.path.exists(fpath):
                         print("[skip] 已存在: {}".format(fname))
                         continue
@@ -114,16 +119,16 @@ def main():
             cmd += ["--swebenchpath", raw_path]
         elif dt == "gsm":
             # GSM 原始数据 process_dataset.py 硬编码为 ./GSM8K.jsonl，做软链
-            if raw_path and not os.path.exists(os.path.join(SCRIPT_DIR, "GSM8K.jsonl")):
+            if raw_path and not os.path.exists(os.path.join(dataset_dir, "GSM8K.jsonl")):
                 if os.path.exists(raw_path):
-                    os.symlink(raw_path, os.path.join(SCRIPT_DIR, "GSM8K.jsonl"))
+                    os.symlink(raw_path, os.path.join(dataset_dir, "GSM8K.jsonl"))
                     print("  [ln ] GSM8K.jsonl -> {}".format(raw_path))
 
         if pfx:
             cmd += ["--mode", "prefix", "--prefix_ratio", str(pfx / 100.0)]
 
         print("[gen] {} ...".format(fname))
-        proc = subprocess.run(cmd, cwd=SCRIPT_DIR, capture_output=True, text=True)
+        proc = subprocess.run(cmd, cwd=dataset_dir, capture_output=True, text=True)
         if proc.returncode != 0:
             tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-10:])
             print("  [fail] 退出码 {}\n{}".format(proc.returncode, tail))

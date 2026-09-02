@@ -74,6 +74,8 @@ _DEFAULT_CFG = {
     "agent_count": 1,
     "agent_step_limit": 200,
     "agent_work_dir": "outputs/agent",
+    "performance_dataset_dir": "datasets/performance",
+    "performance_result_dir": "results/performance",
     "input_len": [32768],
     "concurrencies": [1, 8, 16],
     "default_max_out_len": None,
@@ -171,6 +173,14 @@ AGENT_DATASET = _cfg.get("agent_dataset", "lite")
 AGENT_COUNT = int(_cfg.get("agent_count", 1))
 AGENT_STEP_LIMIT = int(_cfg.get("agent_step_limit", 200))
 AGENT_WORK_DIR = _cfg.get("agent_work_dir", "outputs/agent")
+PERFORMANCE_DATASET_DIR = os.path.join(
+    SCRIPT_DIR,
+    _cfg.get("performance_dataset_dir", "datasets/performance"),
+)
+PERFORMANCE_RESULT_DIR = os.path.join(
+    SCRIPT_DIR,
+    _cfg.get("performance_result_dir", "results/performance"),
+)
 
 INPUT_LEN = _cfg["input_len"]
 CONCURRENCIES = _cfg["concurrencies"]
@@ -723,10 +733,10 @@ MODEL_CFG = os.path.join(
     AIS_BENCH_ROOT,
     "benchmark", "configs", "models", "vllm_api", "vllm_api_general_stream.py",
 )
-DATASET_DIR = SCRIPT_DIR                       # 数据集 jsonl 在脚本所在文件夹下查找
-RUN_CWD = SCRIPT_DIR                           # outputs/excel 统一落在脚本所在目录，不随执行位置变化
+DATASET_DIR = PERFORMANCE_DATASET_DIR          # performance 模式生成的 jsonl 数据集目录
+RUN_CWD = SCRIPT_DIR                           # ais_bench 运行目录，不随执行位置变化
 OUTPUTS_ROOT = os.path.join(RUN_CWD, "outputs", "default")
-EXCEL_PATH = os.path.join(RUN_CWD, "性能测试结果.xlsx")
+EXCEL_PATH = os.path.join(PERFORMANCE_RESULT_DIR, "性能测试结果.xlsx")
 
 # 数据集类型 → (显示名, 文件前缀, 原始路径配置key, process_dataset --datasettype 值)
 _DATASET_INFO = {
@@ -868,7 +878,7 @@ def generate_dataset(dataset_type, input_len, concurrency, pfx=None):
     if dataset_type == "gsm":
         # GSM 数据路径硬编码在 process_dataset.py 中为 ./GSM8K.jsonl
         if raw_path:
-            gsm_link = os.path.join(SCRIPT_DIR, "GSM8K.jsonl")
+            gsm_link = os.path.join(DATASET_DIR, "GSM8K.jsonl")
             if not os.path.exists(gsm_link) and os.path.exists(raw_path):
                 os.symlink(raw_path, gsm_link)
                 print("  [gen] GSM 原始数据 symlink: {} -> {}".format(raw_path, gsm_link))
@@ -885,11 +895,12 @@ def generate_dataset(dataset_type, input_len, concurrency, pfx=None):
     if pfx:
         cmd += ["--mode", "prefix", "--prefix_ratio", str(pfx / 100.0)]
 
+    os.makedirs(DATASET_DIR, exist_ok=True)
     print("  [gen] 自动生成数据集: {}".format(ds_name))
     print("  [gen] CMD: {}".format(" ".join(str(x) for x in cmd)))
     proc = subprocess.run(
         cmd,
-        cwd=SCRIPT_DIR,
+        cwd=DATASET_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -1316,6 +1327,7 @@ def main():
         run_agent_mode()
         return
 
+    os.makedirs(PERFORMANCE_RESULT_DIR, exist_ok=True)
     if args.excel:
         EXCEL_PATH = args.excel
     # 命令行模型配置覆盖脚本默认
@@ -1388,7 +1400,8 @@ def main():
     for (dt, input_len, pfx), group_results in groups.items():
         pfx_tag = "_pfx{}".format(pfx) if pfx else ""
         group_path = os.path.join(
-            RUN_CWD, "性能测试结果_{}_in{}{}_{}.xlsx".format(dt, input_len, pfx_tag, timestamp)
+            PERFORMANCE_RESULT_DIR,
+            "性能测试结果_{}_in{}{}_{}.xlsx".format(dt, input_len, pfx_tag, timestamp),
         )
         write_excel(group_results, out_path=group_path)
 
