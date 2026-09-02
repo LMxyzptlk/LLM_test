@@ -12,10 +12,29 @@ SWEBENCH_DIR="/export/home/ext.liaopeiyi1/lpy/swebench/SWE-bench-v4.1.0"
 SWEBENCH_REF="v4.1.0"
 MINISWEAGENT_REF="e55c29834f65e8d0eb1e1ce56b1fda641cba568a"
 
-# 模型配置
-MODEL_NAME="GLM-5.2-w8a8"
-API_URL="http://11.87.191.78:28888/v1"
-API_KEY="dummy"
+# 从 run_perf.cfg 读取模型配置，保持和 run_perf.py 一致
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUN_PERF_CFG="$SCRIPT_DIR/run_perf.cfg"
+
+if [ ! -f "$RUN_PERF_CFG" ]; then
+    echo "ERROR: 找不到 run_perf.cfg: $RUN_PERF_CFG"
+    exit 1
+fi
+
+MODEL_NAME=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("model",""))')
+HOST_IP=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("host_ip",""))')
+HOST_PORT=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("host_port",""))')
+API_KEY=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("api_key","dummy"))')
+
+if [ -z "$MODEL_NAME" ]; then
+    echo "ERROR: run_perf.cfg 里 model_cfg_params.model 为空"
+    exit 1
+fi
+if [ -z "$HOST_IP" ] || [ -z "$HOST_PORT" ]; then
+    echo "ERROR: run_perf.cfg 里 model_cfg_params.host_ip / host_port 为空"
+    exit 1
+fi
+API_URL="http://${HOST_IP}:${HOST_PORT}/v1"
 
 # ============ 第 1 步:检查/安装 Docker ============
 echo "=== 1. 检查 Docker ==="
