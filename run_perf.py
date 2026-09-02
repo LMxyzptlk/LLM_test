@@ -70,35 +70,54 @@ SETUP_SWEBENCH_SCRIPT = os.path.join(SCRIPT_DIR, "setup_swebench.sh")
 
 _DEFAULT_CFG = {
     "mode": "performance",
-    "agent_dataset": "lite",
-    "agent_count": 1,
-    "agent_step_limit": 200,
-    "agent_work_dir": "outputs/agent",
-    "agent_run_mode": "all",
-    "performance_dataset_dir": "datasets/performance",
-    "performance_result_dir": "results/performance",
-    "input_len": [32768],
-    "concurrencies": [1, 8, 16],
-    "default_max_out_len": None,
-    "default_request_rate": None,
-    "default_pfx": None,
-    "model_cfg_params": {},
-    "dataset_types": ["sharegpt"],
-    "raw_gsm_path": "",
-    "raw_sharegpt_path": "",
-    "raw_swebench_path": "",
-
-    # v1.0.3: 启动前自动准备 benchmark 和原始数据集
-    "auto_prepare": True,
-    "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
-    "benchmark_dir": "",
-    "benchmark_ref": "",
-    "install_requirements": True,
-    "raw_dataset_dir": "raw_datasets",
-    "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
-    "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
-    "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet",
+    "agent": {
+        "dataset": "lite",
+        "count": 1,
+        "step_limit": 200,
+        "work_dir": "outputs/agent",
+        "run_mode": "all",
+        "model_cfg_params": {},
+        "auto_prepare": True,
+        "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
+        "benchmark_dir": "",
+        "benchmark_ref": "",
+        "install_requirements": True,
+    },
+    "performance": {
+        "dataset_dir": "datasets/performance",
+        "result_dir": "results/performance",
+        "input_len": [32768],
+        "concurrencies": [1, 8, 16],
+        "default_max_out_len": None,
+        "default_request_rate": None,
+        "default_pfx": None,
+        "model_cfg_params": {},
+        "dataset_types": ["sharegpt"],
+        "raw_gsm_path": "",
+        "raw_sharegpt_path": "",
+        "raw_swebench_path": "",
+        "auto_prepare": True,
+        "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
+        "benchmark_dir": "",
+        "benchmark_ref": "",
+        "install_requirements": True,
+        "raw_dataset_dir": "raw_datasets",
+        "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
+        "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
+        "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet",
+    },
 }
+
+
+def _deep_merge(base, override):
+    """递归合并嵌套配置。"""
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 def _strip_jsonc_comments(text):
@@ -152,6 +171,9 @@ def _strip_jsonc_comments(text):
     return "".join(out)
 
 
+_CFG_TOP_LEVEL_KEYS = {"mode", "agent", "performance"}
+
+
 def _load_cfg():
     """从 run_perf.cfg 加载配置，支持 JSONC 注释。"""
     if os.path.exists(CFG_PATH):
@@ -160,79 +182,102 @@ def _load_cfg():
         cfg = json.loads(_strip_jsonc_comments(raw))
     else:
         cfg = {}
-    merged = dict(_DEFAULT_CFG)
-    for k, v in cfg.items():
-        if k in merged:
-            merged[k] = v
-    return merged
+
+    unknown_keys = sorted(set(cfg) - _CFG_TOP_LEVEL_KEYS)
+    if unknown_keys:
+        raise RuntimeError(
+            "run_perf.cfg 最外层只支持 mode / agent / performance，发现多余字段: {}".format(
+                ", ".join(unknown_keys)
+            )
+        )
+
+    mode = cfg.get("mode", "performance")
+    if mode not in ("performance", "agent"):
+        raise RuntimeError("run_perf.cfg mode 仅支持 performance / agent，当前: {}".format(mode))
+    for section in ("agent", "performance"):
+        if section in cfg and not isinstance(cfg[section], dict):
+            raise RuntimeError("run_perf.cfg 里 {} 必须是对象".format(section))
+
+    return _deep_merge(_DEFAULT_CFG, cfg)
 
 
 _cfg = _load_cfg()
 
 RUN_MODE = _cfg.get("mode", "performance")
-AGENT_DATASET = _cfg.get("agent_dataset", "lite")
-AGENT_COUNT = int(_cfg.get("agent_count", 1))
-AGENT_STEP_LIMIT = int(_cfg.get("agent_step_limit", 200))
-AGENT_WORK_DIR = _cfg.get("agent_work_dir", "outputs/agent")
-AGENT_RUN_MODE = _cfg.get("agent_run_mode", "all")
+_AGENT_CFG = _cfg.get("agent", {})
+_PERFORMANCE_CFG = _cfg.get("performance", {})
+
+# Agent 模式配置
+AGENT_DATASET = _AGENT_CFG.get("dataset", "lite")
+AGENT_COUNT = int(_AGENT_CFG.get("count", 1))
+AGENT_STEP_LIMIT = int(_AGENT_CFG.get("step_limit", 200))
+AGENT_WORK_DIR = _AGENT_CFG.get("work_dir", "outputs/agent")
+AGENT_RUN_MODE = _AGENT_CFG.get("run_mode", "all")
+AGENT_AUTO_PREPARE = bool(_AGENT_CFG.get("auto_prepare", True))
+_AGENT_MODEL_CFG_PARAMS = dict(_AGENT_CFG.get("model_cfg_params", {}))
+
+# Performance 模式配置
 PERFORMANCE_DATASET_DIR = os.path.join(
     SCRIPT_DIR,
-    _cfg.get("performance_dataset_dir", "datasets/performance"),
+    _PERFORMANCE_CFG.get("dataset_dir", "datasets/performance"),
 )
 PERFORMANCE_RESULT_DIR = os.path.join(
     SCRIPT_DIR,
-    _cfg.get("performance_result_dir", "results/performance"),
+    _PERFORMANCE_CFG.get("result_dir", "results/performance"),
+)
+INPUT_LEN = _PERFORMANCE_CFG.get("input_len", [32768])
+CONCURRENCIES = _PERFORMANCE_CFG.get("concurrencies", [1, 8, 16])
+DEFAULT_MAX_OUT_LEN = _PERFORMANCE_CFG.get("default_max_out_len")
+DEFAULT_REQUEST_RATE = _PERFORMANCE_CFG.get("default_request_rate")
+DEFAULT_PFX = _PERFORMANCE_CFG.get("default_pfx")
+PERFORMANCE_AUTO_PREPARE = bool(_PERFORMANCE_CFG.get("auto_prepare", True))
+_PERFORMANCE_MODEL_CFG_PARAMS = dict(_PERFORMANCE_CFG.get("model_cfg_params", {}))
+
+# 按当前模式选择模型配置
+MODEL_CFG_PARAMS = dict(
+    _AGENT_MODEL_CFG_PARAMS if RUN_MODE == "agent" else _PERFORMANCE_MODEL_CFG_PARAMS
 )
 
-INPUT_LEN = _cfg["input_len"]
-CONCURRENCIES = _cfg["concurrencies"]
-DEFAULT_MAX_OUT_LEN = _cfg["default_max_out_len"]
-DEFAULT_REQUEST_RATE = _cfg["default_request_rate"]
-DEFAULT_PFX = _cfg["default_pfx"]
+# Benchmark 环境配置：agent 模式读 agent 节，performance 模式读 performance 节
+_BENCHMARK_CFG = _AGENT_CFG if RUN_MODE == "agent" else _PERFORMANCE_CFG
+BENCHMARK_REPO = _BENCHMARK_CFG.get("benchmark_repo", "")
+BENCHMARK_REF = _BENCHMARK_CFG.get("benchmark_ref", "")
+INSTALL_REQUIREMENTS = bool(_BENCHMARK_CFG.get("install_requirements", True))
 
-# 模型配置 (对应 vllm_api_general_stream.py 里的字段)
-# path 同时作为 tokenizer 模型路径，不再单独设 MODEL_PATH
-MODEL_CFG_PARAMS = dict(_cfg["model_cfg_params"])
-
-# 数据集生成配置
-DATASET_TYPES = _cfg["dataset_types"]
-
-# v1.0.3: 自动准备配置
-AUTO_PREPARE = bool(_cfg.get("auto_prepare", True))
-BENCHMARK_REPO = _cfg.get("benchmark_repo", "")
-BENCHMARK_REF = _cfg.get("benchmark_ref", "")
-INSTALL_REQUIREMENTS = bool(_cfg.get("install_requirements", True))
+# Performance 数据集配置
+DATASET_TYPES = _PERFORMANCE_CFG.get("dataset_types", ["sharegpt"])
 RAW_DATASET_DIR = os.path.join(
     SCRIPT_DIR,
-    _cfg.get("raw_dataset_dir", "raw_datasets"),
+    _PERFORMANCE_CFG.get("raw_dataset_dir", "raw_datasets"),
 )
-GSM8K_URL = _cfg.get("gsm8k_url", "")
-SHAREGPT_URL = _cfg.get("sharegpt_url", "")
-SWEBENCH_URL = _cfg.get("swebench_url", "")
+GSM8K_URL = _PERFORMANCE_CFG.get("gsm8k_url", "")
+SHAREGPT_URL = _PERFORMANCE_CFG.get("sharegpt_url", "")
+SWEBENCH_URL = _PERFORMANCE_CFG.get("swebench_url", "")
 
-_BENCHMARK_DIR_CFG = _cfg.get("benchmark_dir", "")
+_BENCHMARK_DIR_CFG = _BENCHMARK_CFG.get("benchmark_dir", "")
 BENCHMARK_DIR = (
     os.path.abspath(_BENCHMARK_DIR_CFG)
     if os.path.isabs(_BENCHMARK_DIR_CFG)
     else os.path.join(SCRIPT_DIR, _BENCHMARK_DIR_CFG)
 ) if _BENCHMARK_DIR_CFG else os.path.join(SCRIPT_DIR, "benchmark")
 
-# 原始数据集路径：相对路径以脚本所在目录为基准解析；未配置时落到 raw_datasets/
+
 def _resolve_raw_path(value, default_name):
     if value:
         return value if os.path.isabs(value) else os.path.join(SCRIPT_DIR, value)
     return os.path.join(RAW_DATASET_DIR, default_name)
 
+
 RAW_GSM_PATH = _resolve_raw_path(
-    _cfg.get("raw_gsm_path", ""),
+    _PERFORMANCE_CFG.get("raw_gsm_path", ""),
     os.path.join("gsm8k", "train.jsonl"),
 )
 RAW_SHAREGPT_PATH = _resolve_raw_path(
-    _cfg.get("raw_sharegpt_path", ""),
+    _PERFORMANCE_CFG.get("raw_sharegpt_path", ""),
     "ShareGPT_V3_unfiltered_cleaned_split.json",
 )
 RAW_SWEBENCH_PATH = _resolve_raw_path(
-    _cfg.get("raw_swebench_path", ""),
+    _PERFORMANCE_CFG.get("raw_swebench_path", ""),
     os.path.join("swe-bench", "test-00000-of-00001.parquet"),
 )
 
@@ -314,8 +359,8 @@ def _ensure_raw_file(path, url, label):
     if os.path.exists(path) and os.path.getsize(path) > 0:
         print("  [raw ] {} 已存在: {}".format(label, path))
         return path
-    if not AUTO_PREPARE:
-        raise RuntimeError("{} 不存在且 auto_prepare=false: {}".format(label, path))
+    if not PERFORMANCE_AUTO_PREPARE:
+        raise RuntimeError("{} 不存在且 performance.auto_prepare=false: {}".format(label, path))
     if not url:
         raise RuntimeError("{} 不存在且未配置下载 URL".format(label))
     _download_file(url, path)
@@ -330,8 +375,8 @@ def _ensure_gsm8k(path):
     if os.path.exists(path) and os.path.getsize(path) > 0:
         print("  [raw ] GSM8K 已存在: {}".format(path))
         return path
-    if not AUTO_PREPARE:
-        raise RuntimeError("GSM8K 不存在且 auto_prepare=false: {}".format(path))
+    if not PERFORMANCE_AUTO_PREPARE:
+        raise RuntimeError("GSM8K 不存在且 performance.auto_prepare=false: {}".format(path))
     if not GSM8K_URL:
         raise RuntimeError("GSM8K 不存在且未配置 gsm8k_url")
     os.makedirs(RAW_DATASET_DIR, exist_ok=True)
@@ -389,7 +434,7 @@ def _import_or_none(name):
 
 def _ensure_agent_environment():
     '''确保 agent 模式需要的 mini-swe-agent / swebench 已安装。'''
-    if AUTO_PREPARE and os.path.isfile(SETUP_SWEBENCH_SCRIPT):
+    if AGENT_AUTO_PREPARE and os.path.isfile(SETUP_SWEBENCH_SCRIPT):
         print("  [agent] 执行环境配置脚本: {}".format(SETUP_SWEBENCH_SCRIPT))
         _run_checked(
             ["bash", SETUP_SWEBENCH_SCRIPT],
@@ -406,8 +451,8 @@ def _ensure_agent_environment():
         print("  [agent] mini-swe-agent / swebench 环境已就绪")
         return
 
-    if not AUTO_PREPARE:
-        raise RuntimeError("agent 模式缺少依赖 {}，且 auto_prepare=false".format(missing))
+    if not AGENT_AUTO_PREPARE:
+        raise RuntimeError("agent 模式缺少依赖 {}，且 agent.auto_prepare=false".format(missing))
 
     print("  [agent] 缺少依赖 {}，开始自动安装".format(missing))
     if "minisweagent" in missing:
@@ -717,7 +762,7 @@ def _ensure_ais_bench_root():
     try:
         return _find_existing_ais_bench_root()
     except Exception as exc:
-        if not AUTO_PREPARE:
+        if not PERFORMANCE_AUTO_PREPARE:
             raise
         print("  [bench] 未找到已安装的 ais_bench，开始自动准备: {}".format(exc))
         _clone_benchmark_repo(BENCHMARK_DIR)
@@ -1320,9 +1365,24 @@ def main():
     ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
     args = ap.parse_args()
 
-    global EXCEL_PATH, MODEL_CFG_PARAMS, RUN_MODE, AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
+    global EXCEL_PATH, MODEL_CFG_PARAMS, RUN_MODE
+    global AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
+    global BENCHMARK_REPO, BENCHMARK_REF, INSTALL_REQUIREMENTS, BENCHMARK_DIR
     if args.mode:
         RUN_MODE = args.mode
+        MODEL_CFG_PARAMS = dict(
+            _AGENT_MODEL_CFG_PARAMS if RUN_MODE == "agent" else _PERFORMANCE_MODEL_CFG_PARAMS
+        )
+        benchmark_cfg = _AGENT_CFG if RUN_MODE == "agent" else _PERFORMANCE_CFG
+        BENCHMARK_REPO = benchmark_cfg.get("benchmark_repo", "")
+        BENCHMARK_REF = benchmark_cfg.get("benchmark_ref", "")
+        INSTALL_REQUIREMENTS = bool(benchmark_cfg.get("install_requirements", True))
+        benchmark_dir_cfg = benchmark_cfg.get("benchmark_dir", "")
+        BENCHMARK_DIR = (
+            os.path.abspath(benchmark_dir_cfg)
+            if os.path.isabs(benchmark_dir_cfg)
+            else os.path.join(SCRIPT_DIR, benchmark_dir_cfg)
+        ) if benchmark_dir_cfg else os.path.join(SCRIPT_DIR, "benchmark")
     if args.agent_dataset:
         AGENT_DATASET = args.agent_dataset
     if args.agent_count is not None:
@@ -1387,7 +1447,7 @@ def main():
 
     # ---- v1.0.3: 自动准备本次用到的原始数据集 ----
     active_dataset_types = sorted({case.get("dataset_type", "sharegpt") for case in cases})
-    print("自动准备 = {}".format("开启" if AUTO_PREPARE else "关闭"))
+    print("performance 自动准备 = {}".format("开启" if PERFORMANCE_AUTO_PREPARE else "关闭"))
     prepare_raw_datasets(active_dataset_types)
 
     # ---- 跑用例 ----

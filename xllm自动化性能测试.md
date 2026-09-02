@@ -221,50 +221,109 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 
 ## 2、配置 run_perf.cfg
 
-所有可修改的参数放在脚本同目录下的 `run_perf.cfg` 中，**不再需要改脚本本身**。脚本启动时自动读取。
+所有可修改参数放在脚本同目录下的 `run_perf.cfg` 中，支持中文注释。**最外层固定只有三个 key：`mode`、`agent`、`performance`**。两种模式各自的模型配置、benchmark 配置和自动准备开关完全分开，互不混用。
 
-```json
+```jsonc
 {
-  "input_len": [32768],
-  "concurrencies": [1, 8, 16],
-  "default_max_out_len": null,
-  "default_request_rate": null,
-  "default_pfx": null,
+  // performance = 拼接压测数据集；agent = 原生 SWE-bench
+  "mode": "performance",
 
-  "model_cfg_params": {
-    "path": "/export/home/models/DeepSeek-V4-Flash-w8a8-mtp",
-    "model": "DeepSeek-V4-Flash-w8a8-mtp",
-    "host_ip": "11.87.191.83",
-    "host_port": 18004
+  // Agent 模式专用配置
+  "agent": {
+    "dataset": "lite",              // lite / verified / full / multilingual
+    "count": 10,                    // 1=第 1 条，10=前 10 条，0=全部
+    "step_limit": 200,
+    "work_dir": "outputs/agent",
+    "run_mode": "all",              // infer / eval / all
+    "model_cfg_params": {
+      "path": "/export/home/models/DeepSeek-V4-Flash-w8a8-mtp",
+      "model": "DeepSeek-V4-Flash-w8a8-mtp",
+      "host_ip": "11.87.191.83",
+      "host_port": 18004
+    },
+    "auto_prepare": true,
+    "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
+    "benchmark_dir": "",
+    "benchmark_ref": "",
+    "install_requirements": true
   },
 
-  "dataset_types": ["gsm", "sharegpt", "swebench"],
-  "raw_gsm_path": "/data/GSM8K.jsonl",
-  "raw_sharegpt_path": "/data/ShareGPT_V3_unfiltered_cleaned_split.json",
-  "raw_swebench_path": "/data/SWE-bench/data/test-00000-of-00001.parquet"
+  // Performance 模式专用配置
+  "performance": {
+    "dataset_dir": "datasets/performance",
+    "result_dir": "results/performance",
+    "input_len": [32768],
+    "concurrencies": [1, 8, 16],
+    "default_max_out_len": null,
+    "default_request_rate": null,
+    "default_pfx": null,
+    "model_cfg_params": {
+      "path": "/export/home/models/DeepSeek-V4-Flash-w8a8-mtp",
+      "model": "DeepSeek-V4-Flash-w8a8-mtp",
+      "host_ip": "11.87.191.83",
+      "host_port": 18004
+    },
+    "dataset_types": ["gsm", "sharegpt", "swebench"],
+    "raw_gsm_path": "/data/GSM8K.jsonl",
+    "raw_sharegpt_path": "/data/ShareGPT_V3_unfiltered_cleaned_split.json",
+    "raw_swebench_path": "/data/SWE-bench/data/test-00000-of-00001.parquet",
+    "auto_prepare": true,
+    "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
+    "benchmark_dir": "",
+    "benchmark_ref": "",
+    "install_requirements": true,
+    "raw_dataset_dir": "raw_datasets",
+    "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
+    "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
+    "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet"
+  }
 }
 ```
 
+### Agent 节点字段
+
 | 字段 | 说明 |
 |------|------|
-| `input_len` | 简易模式输入长度列表 |
-| `concurrencies` | 简易模式并发数列表（batch_size） |
-| `default_max_out_len` | 默认输出长度（null = 不改，用 vllm py 现有值） |
-| `default_request_rate` | 默认 request_rate（null = 不改，0 = 打满） |
-| `default_pfx` | 默认 pfx（null = 普通数据集） |
-| `model_cfg_params` | 模型配置，写入 `vllm_api_general_stream.py`。其中 `path` 同时用作 tokenizer 模型路径 |
-| `dataset_types` | 数据集类型列表：gsm / sharegpt / swebench |
-| `raw_gsm_path` | GSM8K.jsonl 原始路径 |
-| `raw_sharegpt_path` | ShareGPT 原始 JSON 路径 |
-| `raw_swebench_path` | SWE-bench parquet 路径 |
+| `mode` | 运行模式：performance / agent |
+| `agent.dataset` | 官方 SWE-bench 数据集：lite / verified / full / multilingual |
+| `agent.count` | 按数据集原始顺序取前 N 条；0 表示全部 |
+| `agent.step_limit` | 单个 instance 的最大步数 |
+| `agent.work_dir` | Agent 输出目录 |
+| `agent.run_mode` | infer=只推理，eval=只评测，all=推理 + 评测 |
+| `agent.model_cfg_params` | Agent 模式专用模型配置，写入自动生成的 SWE-bench 配置 |
+| `agent.auto_prepare` | 是否自动执行 `setup_swebench.sh` |
+| `agent.benchmark_repo` | benchmark 源码仓库 |
+| `agent.benchmark_dir` | benchmark 本地目录；留空使用脚本旁的 `benchmark/` |
+| `agent.benchmark_ref` | benchmark 分支或 tag |
+| `agent.install_requirements` | 是否自动安装 benchmark requirements |
 
-> 💡 **路径自动定位**：`AIS_BENCH_ROOT` 通过 `import ais_bench_benchmark` 自动定位安装目录，支持标准安装和 `pip install -e` 开发安装。脚本放任意位置都能跑。
+### Performance 节点字段
+
+| 字段 | 说明 |
+|------|------|
+| `performance.dataset_dir` | 生成的压测数据集目录 |
+| `performance.result_dir` | Excel 结果目录 |
+| `performance.input_len` | 简易模式输入长度列表 |
+| `performance.concurrencies` | 简易模式并发数列表（batch_size） |
+| `performance.default_max_out_len` | 默认输出长度（null = 不改） |
+| `performance.default_request_rate` | 默认 request_rate（null = 不改，0 = 打满） |
+| `performance.default_pfx` | 默认 pfx（null = 普通数据集） |
+| `performance.model_cfg_params` | Performance 模式专用模型配置；`path` 同时用于 tokenizer |
+| `performance.dataset_types` | 数据集类型列表：gsm / sharegpt / swebench |
+| `performance.raw_gsm_path` | GSM8K 原始路径；留空自动下载 |
+| `performance.raw_sharegpt_path` | ShareGPT 原始 JSON 路径；留空自动下载 |
+| `performance.raw_swebench_path` | SWE-bench parquet 路径；留空自动下载 |
+| `performance.auto_prepare` | 是否自动准备 benchmark 和原始数据 |
+| `performance.raw_dataset_dir` | 原始数据默认下载目录 |
+| `performance.gsm8k_url` / `performance.sharegpt_url` / `performance.swebench_url` | 原始数据下载地址 |
+
+> 💡 **路径自动定位**：`AIS_BENCH_ROOT` 通过 `import ais_bench_benchmark` 自动定位安装目录，支持标准安装和 `pip install -e` 开发安装。
 >
-> 💡 **数据集 jsonl** 在脚本所在文件夹下查找。若找不到，**自动调用 process_dataset.py 生成**（需配置 `model_cfg_params.path` 和对应的原始数据路径）。
+> 💡 **Performance 数据集**：优先从 `performance.dataset_dir` 查找；缺失时自动下载原始数据并调用 `process_dataset.py` 生成。
 >
-> 💡 **outputs 和 Excel** 统一落在脚本所在目录，不随执行位置变化。
+> 💡 **Agent 模式**：读取 `agent.model_cfg_params`，自动生成原生 SWE-bench 配置；`agent.count` 按官方数据集原始顺序截取。
 >
-> 💡 `model_cfg_params.path` 同时作为 tokenizer 模型路径，不再需要单独配置 `MODEL_PATH`。
+> 💡 `performance.model_cfg_params.path` 同时作为 tokenizer 模型路径，不再需要单独配置 `MODEL_PATH`。
 
 ## 3、启动测试
 
@@ -378,7 +437,7 @@ python3 run_perf.py -i 32768 -c 1 8 16 --skip-run
 ## 5、自动化流水线关键设计
 
 - **路径自动定位**：`AIS_BENCH_ROOT` 通过 `import ais_bench_benchmark` 自动定位安装目录，支持标准安装和 `pip install -e` 开发安装；脚本放任意位置都能跑，outputs 和 Excel 统一落在脚本所在目录
-- **配置外置**：所有可修改参数放在 `run_perf.cfg` 中，不再需要改脚本本身；`model_cfg_params.path` 同时作为 tokenizer 模型路径
+- **配置外置**：所有可修改参数放在 `run_perf.cfg` 的 `mode / agent / performance` 三个节点中，不再需要改脚本本身；`performance.model_cfg_params.path` 同时作为 tokenizer 模型路径
 - **配置注入靠正则改文件**：`set_model_cfg()` 用正则把参数写进 ais_bench 的模型配置 py，不侵入 ais_bench 代码；**静态配置**（path/model/host_ip/host_port）启动时写一次，**动态配置**（batch_size/max_out_len/request_rate）每个用例跑之前单独写
 - **数据集绑定靠软链**：`ln -sf 选中.jsonl test.jsonl train.jsonl`，同时软链 test 和 train（ais_bench 启动会检查 train.jsonl 是否存在），切换用例零拷贝
 - **结果目录只认"本次新增"**：运行前快照 outputs 目录，运行后只在新目录里找 gsm8k.csv —— **防止失败用例复用历史结果、数值张冠李戴**

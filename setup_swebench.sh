@@ -21,17 +21,17 @@ if [ ! -f "$RUN_PERF_CFG" ]; then
     exit 1
 fi
 
-MODEL_NAME=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("model",""))')
-HOST_IP=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("host_ip",""))')
-HOST_PORT=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("host_port",""))')
-API_KEY=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("api_key","dummy"))')
+MODEL_NAME=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("agent",{}).get("model_cfg_params",{}).get("model",""))')
+HOST_IP=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("agent",{}).get("model_cfg_params",{}).get("host_ip",""))')
+HOST_PORT=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("agent",{}).get("model_cfg_params",{}).get("host_port",""))')
+API_KEY=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("agent",{}).get("model_cfg_params",{}).get("api_key","dummy"))')
 
 # 环境准备阶段不强制要求模型配置；真正需要写入模型配置时再检查
 if [ -n "$MODEL_NAME" ] && [ -n "$HOST_IP" ] && [ -n "$HOST_PORT" ]; then
     API_URL="http://${HOST_IP}:${HOST_PORT}/v1"
 else
     API_URL=""
-    echo "⚠️  run_perf.cfg 里 model_cfg_params.model / host_ip / host_port 未完整配置，先跳过模型配置写入"
+    echo "⚠️  run_perf.cfg 里 agent.model_cfg_params.model / host_ip / host_port 未完整配置，先跳过模型配置写入"
 fi
 
 # ============ 第 1 步:检查/安装 Docker ============

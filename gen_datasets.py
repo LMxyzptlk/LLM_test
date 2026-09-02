@@ -12,7 +12,7 @@ gen_datasets.py — 提前批量生成压测数据集
 """
 
 import argparse
-import json
+import json5
 import os
 import subprocess
 import sys
@@ -31,7 +31,7 @@ _DATASET_INFO = {
 
 def load_cfg():
     with open(CFG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        return json5.load(f)
 
 
 def dataset_filename(dt, input_len, bs, pfx=None):
@@ -47,19 +47,20 @@ def main():
     args = ap.parse_args()
 
     cfg = load_cfg()
+    perf_cfg = cfg.get("performance", {})
     dataset_dir = os.path.join(
         SCRIPT_DIR,
-        cfg.get("performance_dataset_dir", "datasets/performance"),
+        perf_cfg.get("dataset_dir", "datasets/performance"),
     )
     os.makedirs(dataset_dir, exist_ok=True)
-    dataset_types = cfg.get("dataset_types", ["sharegpt"])
-    input_lens = cfg.get("input_len", [32768])
-    concurrencies = cfg.get("concurrencies", [1, 8, 16])
-    pfx_list = [p for p in ([cfg.get("default_pfx")] if cfg.get("default_pfx") else [None])]
-    model_path = cfg.get("model_cfg_params", {}).get("path", "")
+    dataset_types = perf_cfg.get("dataset_types", ["sharegpt"])
+    input_lens = perf_cfg.get("input_len", [32768])
+    concurrencies = perf_cfg.get("concurrencies", [1, 8, 16])
+    pfx_list = [p for p in ([perf_cfg.get("default_pfx")] if perf_cfg.get("default_pfx") else [None])]
+    model_path = perf_cfg.get("model_cfg_params", {}).get("path", "")
 
     if not model_path:
-        print("错误: run_perf.cfg 里 model_cfg_params.path 未配置")
+        print("错误: run_perf.cfg 里 performance.model_cfg_params.path 未配置")
         sys.exit(1)
 
     # 展开 (dt, input_len, bs, pfx) 组合，去重并跳过已存在文件
@@ -96,7 +97,7 @@ def main():
     ok, fail = 0, 0
     for dt, il, bs, pfx, fname, _ in tasks:
         _, raw_key, ds_arg = _DATASET_INFO[dt]
-        raw_path = cfg.get(raw_key, "")
+        raw_path = perf_cfg.get(raw_key, "")
 
         cmd = [
             "python3", PROCESS_DATASET,
