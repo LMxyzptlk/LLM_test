@@ -74,6 +74,7 @@ _DEFAULT_CFG = {
     "agent_count": 1,
     "agent_step_limit": 200,
     "agent_work_dir": "outputs/agent",
+    "agent_run_mode": "all",
     "performance_dataset_dir": "datasets/performance",
     "performance_result_dir": "results/performance",
     "input_len": [32768],
@@ -173,6 +174,7 @@ AGENT_DATASET = _cfg.get("agent_dataset", "lite")
 AGENT_COUNT = int(_cfg.get("agent_count", 1))
 AGENT_STEP_LIMIT = int(_cfg.get("agent_step_limit", 200))
 AGENT_WORK_DIR = _cfg.get("agent_work_dir", "outputs/agent")
+AGENT_RUN_MODE = _cfg.get("agent_run_mode", "all")
 PERFORMANCE_DATASET_DIR = os.path.join(
     SCRIPT_DIR,
     _cfg.get("performance_dataset_dir", "datasets/performance"),
@@ -572,6 +574,7 @@ def run_agent_mode():
     print("数据集 = {}".format(AGENT_DATASET))
     print("数量 = {}".format("全部" if AGENT_COUNT <= 0 else AGENT_COUNT))
     print("step_limit = {}".format(AGENT_STEP_LIMIT))
+    print("运行阶段 = {}".format(AGENT_RUN_MODE))
     print("工作目录 = {}".format(AGENT_WORK_DIR))
 
     _ensure_agent_environment()
@@ -589,7 +592,7 @@ def run_agent_mode():
     cmd = [
         "ais_bench",
         cfg_path,
-        "--mode", "all",
+        "--mode", AGENT_RUN_MODE,
         "--work-dir", work_dir,
         "--max-num-workers", "1",
     ]
@@ -1292,6 +1295,8 @@ def main():
                     help="agent 模式: SWE-bench 数据集类型")
     ap.add_argument("--agent-count", type=int, default=None,
                     help="agent 模式: 取前 N 条; 0 表示全部")
+    ap.add_argument("--agent-run-mode", choices=["infer", "eval", "all"], default=None,
+                    help="agent 模式: infer=只推理, eval=只评测, all=推理+评测")
     # 简易模式 (向后兼容)
     ap.add_argument("-i", "--input-len", type=int, nargs="+", default=None,
                     help="简易模式: 输入长度列表")
@@ -1322,6 +1327,8 @@ def main():
         AGENT_DATASET = args.agent_dataset
     if args.agent_count is not None:
         AGENT_COUNT = args.agent_count
+    if args.agent_run_mode:
+        AGENT_RUN_MODE = args.agent_run_mode
 
     if RUN_MODE == "agent":
         run_agent_mode()

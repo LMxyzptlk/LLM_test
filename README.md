@@ -16,6 +16,10 @@
   - `agent_count=1`：只跑第 1 条
   - `agent_count=10`：跑前 10 条
   - `agent_count=0`：跑全部
+- **Agent 模式支持选择运行阶段**
+  - `agent_run_mode=infer`：只推理
+  - `agent_run_mode=eval`：只评测
+  - `agent_run_mode=all`：推理 + 评测
 - **Agent 模式自动准备环境**
   - 自动检查 `mini-swe-agent`
   - 自动检查 `swebench`
@@ -28,6 +32,7 @@
   - `--mode performance|agent`
   - `--agent-dataset lite|verified|full|multilingual`
   - `--agent-count N`
+  - `--agent-run-mode infer|eval|all`
 
 ### v1.0.3 — 2026-09-02
 
