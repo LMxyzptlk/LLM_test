@@ -50,6 +50,7 @@ import glob
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -224,12 +225,56 @@ RAW_SWEBENCH_PATH = _resolve_raw_path(
 )
 
 
+def _kill_process_group(proc, sig):
+    """向子进程所在进程组发送信号。"""
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        pass
+
+
+def _wait_with_interrupt(proc):
+    """等待子进程，Ctrl+C 时先 SIGINT，再 SIGTERM，最后 SIGKILL。"""
+    while True:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            print("\n  [interrupt] 收到 Ctrl+C，正在停止子进程...")
+            _kill_process_group(proc, signal.SIGINT)
+            try:
+                proc.wait(timeout=3)
+                return proc.returncode
+            except subprocess.TimeoutExpired:
+                pass
+
+            print("  [interrupt] 子进程未退出，发送 SIGTERM...")
+            _kill_process_group(proc, signal.SIGTERM)
+            try:
+                proc.wait(timeout=3)
+                return proc.returncode
+            except subprocess.TimeoutExpired:
+                pass
+
+            print("  [interrupt] 子进程仍未退出，发送 SIGKILL...")
+            _kill_process_group(proc, signal.SIGKILL)
+            proc.wait()
+            return proc.returncode
+
+
 def _run_checked(cmd, cwd=None, label=""):
-    """执行外部命令，失败时抛 RuntimeError。"""
+    """执行外部命令，失败时抛 RuntimeError；Ctrl+C 时强制清理子进程组。"""
     print("  [exec] {}".format(" ".join(map(str, cmd))))
-    proc = subprocess.run(cmd, cwd=cwd, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError("{} 退出码 {}: {}".format(label or "命令", proc.returncode, " ".join(map(str, cmd))))
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        text=True,
+        start_new_session=True,
+    )
+    returncode = _wait_with_interrupt(proc)
+    if returncode != 0:
+        raise RuntimeError("{} 退出码 {}: {}".format(label or "命令", returncode, " ".join(map(str, cmd))))
     return proc
 
 
@@ -539,9 +584,15 @@ def run_agent_mode():
         "--max-num-workers", "1",
     ]
     print("  [agent] CMD: {}".format(" ".join(cmd)))
-    proc = subprocess.run(cmd, cwd=SCRIPT_DIR, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError("ais_bench agent 模式退出码 {}".format(proc.returncode))
+    proc = subprocess.Popen(
+        cmd,
+        cwd=SCRIPT_DIR,
+        text=True,
+        start_new_session=True,
+    )
+    returncode = _wait_with_interrupt(proc)
+    if returncode != 0:
+        raise RuntimeError("ais_bench agent 模式退出码 {}".format(returncode))
     print("  [agent] 原生 SWE-bench 完成")
 
 
