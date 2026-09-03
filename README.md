@@ -2,6 +2,33 @@
 
 ## 版本历史
 
+### v1.3.0 — 2026-09-03
+
+- **Performance 模式新增 `native_multiturn` 子类型**
+  - `performance.kind=concat`：保留原有拼接压测数据集流程
+  - `performance.kind=native_multiturn`：接入 AISBench 原生 ShareGPT 多轮对话性能测试
+- **原生多轮支持按有效对话组截取**
+  - `conversation_count=100`：取前 100 组有效多轮对话
+  - `conversation_count=0`：全量 ShareGPT
+- **支持多轮推理模式**
+  - `infer_mode=every`
+  - `infer_mode=last`
+  - `infer_mode=every_with_gt`
+- **自动生成 AISBench 原生多轮配置**
+  - 使用 `vllm_api_stream_chat_multiturn`
+  - 使用 `sharegpt_gen`
+  - 输出到 `outputs/performance_configs/`
+- **原生多轮结果单独落盘**
+  - AISBench 输出：`outputs/performance/native_multiturn/`
+  - Excel 输出：`results/performance/native_multiturn/`
+- **新增命令行参数**
+  - `--performance-kind concat|native_multiturn`
+  - `--native-conversation-count N`
+  - `--native-infer-mode every|last|every_with_gt`
+  - `--native-work-dir`
+  - `--native-result-dir`
+  - `--native-raw-sharegpt-path`
+
 ### v1.2.1 — 2026-09-03
 
 - **支持混合运行**
@@ -87,7 +114,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| `run_perf.py` | 自动测试入口，支持 performance、agent、accuracy 三种模式及任意组合 |
+| `run_perf.py` | 自动测试入口，支持 performance、agent、accuracy 三种模式及任意组合；performance 支持 concat 和 native_multiturn |
 | `run_perf.cfg` | JSONC 配置文件，支持中文注释 |
 | `gen_datasets.py` | 提前批量生成 performance 压测数据集 |
 | `process_dataset.py` | 压测数据集制作脚本 |
@@ -106,20 +133,23 @@ python3 run_perf.py --mode performance --cases cases.json
 # 3. agent：原生 SWE-bench，取 Lite 前 10 条
 python3 run_perf.py --mode agent --agent-dataset lite --agent-count 10
 
-# 4. accuracy：evalscope 精度测试，默认 GPQA Diamond
+# 4. performance 原生 ShareGPT 多轮压测
+python3 run_perf.py --mode performance --performance-kind native_multiturn
+
+# 5. accuracy：evalscope 精度测试，默认 GPQA Diamond
 python3 run_perf.py --mode accuracy
 
-# 5. 混合运行：agent -> performance -> accuracy
+# 6. 混合运行：agent -> performance -> accuracy
 python3 run_perf.py --mode agent performance accuracy
 
-# 6. 逗号写法等价
+# 7. 逗号写法等价
 python3 run_perf.py --mode agent,performance,accuracy
 
-# 7. 可选：只推理 / 只评测
+# 8. 可选：只推理 / 评测
 python3 run_perf.py --mode agent --agent-run-mode infer
 python3 run_perf.py --mode agent --agent-run-mode eval
 
-# 8. 可选：预生成 performance 数据集
+# 9. 可选：预生成 performance concat 数据集
 python3 gen_datasets.py --dry-run
 python3 gen_datasets.py
 ```
@@ -183,6 +213,21 @@ python3 gen_datasets.py
   },
 
   "performance": {
+    // concat=拼接压测；native_multiturn=AISBench 原生 ShareGPT 多轮压测
+    "kind": "concat",
+    "native_multiturn": {
+      "conversation_count": 100,
+      "infer_mode": "every",
+      "max_out_len": 512,
+      "request_rate": 0,
+      "work_dir": "outputs/performance/native_multiturn",
+      "result_dir": "results/performance/native_multiturn",
+      "raw_sharegpt_path": "",
+      "generation_kwargs": {
+        "temperature": 0.01,
+        "ignore_eos": false
+      }
+    },
     "dataset_dir": "datasets/performance",
     "result_dir": "results/performance",
     "input_len": [32768],
@@ -251,7 +296,15 @@ python3 gen_datasets.py
 
 | 字段 | 说明 |
 |------|------|
-| `performance.dataset_dir` | 生成的压测数据集目录 |
+| `performance.kind` | performance 子类型：concat / native_multiturn |
+| `performance.native_multiturn.conversation_count` | 原生多轮取前 N 组有效对话；0=全量 |
+| `performance.native_multiturn.infer_mode` | every / last / every_with_gt |
+| `performance.native_multiturn.max_out_len` | 原生多轮单次请求最大输出 |
+| `performance.native_multiturn.request_rate` | 原生多轮请求速率；0=打满 |
+| `performance.native_multiturn.work_dir` | AISBench 原生多轮输出目录 |
+| `performance.native_multiturn.result_dir` | 原生多轮 Excel 目录 |
+| `performance.native_multiturn.raw_sharegpt_path` | 原始 ShareGPT 路径；空值复用 `performance.raw_sharegpt_path` |
+| `performance.dataset_dir` | concat 生成的压测数据集目录 |
 | `performance.result_dir` | Excel 结果目录 |
 | `performance.input_len` | 简易模式输入长度列表 |
 | `performance.concurrencies` | 简易模式并发列表 |
@@ -268,8 +321,10 @@ python3 gen_datasets.py
 ## 输出
 
 ```text
-datasets/performance/   # performance 生成的 jsonl
-results/performance/    # performance Excel
+datasets/performance/   # performance concat 生成的 jsonl
+results/performance/    # performance concat Excel
+results/performance/native_multiturn/ # 原生多轮 Excel
+outputs/performance/native_multiturn/ # 原生多轮 AISBench 输出
 outputs/agent/          # agent 原生 SWE-bench 输出
 outputs/accuracy/       # accuracy 精度测试输出
 outputs/agent_configs/  # agent 自动生成的 ais_bench 配置

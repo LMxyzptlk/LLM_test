@@ -278,6 +278,21 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 
   // Performance 模式专用配置
   "performance": {
+    // concat=拼接压测；native_multiturn=AISBench 原生 ShareGPT 多轮压测
+    "kind": "concat",
+    "native_multiturn": {
+      "conversation_count": 100, // 取前 N 组有效多轮对话；0=全量
+      "infer_mode": "every",    // every / last / every_with_gt
+      "max_out_len": 512,
+      "request_rate": 0,
+      "work_dir": "outputs/performance/native_multiturn",
+      "result_dir": "results/performance/native_multiturn",
+      "raw_sharegpt_path": "",
+      "generation_kwargs": {
+        "temperature": 0.01,
+        "ignore_eos": false
+      }
+    },
     "dataset_dir": "datasets/performance",
     "result_dir": "results/performance",
     "input_len": [32768],
@@ -346,7 +361,15 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 
 | 字段 | 说明 |
 |------|------|
-| `performance.dataset_dir` | 生成的压测数据集目录 |
+| `performance.kind` | performance 子类型：concat=拼接压测，native_multiturn=AISBench 原生 ShareGPT 多轮压测 |
+| `performance.native_multiturn.conversation_count` | 取前 N 组有效多轮对话；0=全量 |
+| `performance.native_multiturn.infer_mode` | every / last / every_with_gt |
+| `performance.native_multiturn.max_out_len` | 单次请求最大输出 token |
+| `performance.native_multiturn.request_rate` | 请求发送速率；0=打满 |
+| `performance.native_multiturn.work_dir` | AISBench 原生多轮输出目录 |
+| `performance.native_multiturn.result_dir` | 原生多轮 Excel 输出目录 |
+| `performance.native_multiturn.raw_sharegpt_path` | 原始 ShareGPT 路径；留空复用 `performance.raw_sharegpt_path` |
+| `performance.dataset_dir` | concat 模式生成的压测数据集目录 |
 | `performance.result_dir` | Excel 结果目录 |
 | `performance.input_len` | 简易模式输入长度列表 |
 | `performance.concurrencies` | 简易模式并发数列表（batch_size） |
@@ -374,7 +397,7 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 
 ## 3、启动测试
 
-run_perf.py 支持三种模式：performance（性能压测）、agent（原生 SWE-bench）、accuracy（evalscope 精度测试），并支持任意组合混合运行。
+run_perf.py 支持三种模式：performance（性能压测）、agent（原生 SWE-bench）、accuracy（evalscope 精度测试），并支持任意组合混合运行。Performance 内部支持 `concat` 拼接压测和 `native_multiturn` 原生 ShareGPT 多轮压测。
 
 ### 模式三：Accuracy 精度测试
 
@@ -399,7 +422,44 @@ evalscope eval \
   --dataset-args '{"gpqa_diamond":{"filters":{"remove_until":"</think>"}}}'
 ```
 
+### Performance 子类型：原生 ShareGPT 多轮
+
+使用 AISBench 原生 `sharegpt_gen` 数据集和 `vllm_api_stream_chat_multiturn` 模型任务：
+
+```shell
+python3 run_perf.py --mode performance \
+    --performance-kind native_multiturn \
+    --native-conversation-count 100 \
+    -c 1 8 16 \
+    --max-out-len 512 \
+    --request-rate 0
+```
+
+配置文件等价写法：
+
+```jsonc
+"performance": {
+  "kind": "native_multiturn",
+  "native_multiturn": {
+    "conversation_count": 100,
+    "infer_mode": "every"
+  }
+}
+```
+
+说明：
+
+- `conversation_count=100` 表示截取前 100 组有效多轮对话；`0` 表示全量
+- 有效对话会按 AISBench 规则过滤：轮数 ≥ 2、总轮数为偶数、第一轮来自 human
+- `infer_mode=every` 会按多轮请求统计性能指标
+- 原生多轮不生成 `ShareGPT-in{LEN}-bs{BS}.jsonl`，也不经过 `process_dataset.py`
+- 原生多轮没有固定 `input_len`，不能和 concat 模式的固定输入长度直接做同维度对比
+- 输出目录：
+  - AISBench：`outputs/performance/native_multiturn/`
+  - Excel：`results/performance/native_multiturn/`
+
 ### 模式四：混合运行
+
 
 `mode` 支持一个、两个或三个模式的任意组合，并按给定顺序执行。
 
@@ -515,6 +575,11 @@ python3 run_perf.py -i 32768 -c 1 8 16 --skip-run
 | 参数 | 说明 |
 |------|------|
 | `--mode` | 单个或混合模式：performance / agent / accuracy；支持空格、逗号和重复传参 |
+| `--performance-kind` | performance 子类型：concat / native_multiturn |
+| `--native-conversation-count` | 原生多轮取前 N 组有效对话；0=全量 |
+| `--native-infer-mode` | 原生多轮推理模式：every / last / every_with_gt |
+| `--native-work-dir` | 原生多轮 AISBench 输出目录 |
+| `--native-result-dir` | 原生多轮 Excel 输出目录 |
 | `--cases` | JSON 用例文件路径（performance 模式） |
 | `-i / --input-len` | 输入长度列表（简易模式） |
 | `-c / --concurrency` | 并发数列表（简易模式） |
@@ -535,7 +600,7 @@ python3 run_perf.py -i 32768 -c 1 8 16 --skip-run
 
 ## 4、输出
 
-Performance 的 outputs 和 Excel 统一落在**脚本所在目录**下。按 `(数据集类型, 输入长度, pfx)` 分组生成 Excel；Agent 输出在 `outputs/agent/`；Accuracy 输出在 `outputs/accuracy/`。
+Performance concat 的 outputs 和 Excel 统一落在**脚本所在目录**下，按 `(数据集类型, 输入长度, pfx)` 分组生成 Excel；原生多轮输出在 `outputs/performance/native_multiturn/` 和 `results/performance/native_multiturn/`；Agent 输出在 `outputs/agent/`；Accuracy 输出在 `outputs/accuracy/`。
 
 ```
 性能测试结果_sharegpt_in32768.xlsx

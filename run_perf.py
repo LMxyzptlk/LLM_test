@@ -106,6 +106,20 @@ _DEFAULT_CFG = {
         },
     },
     "performance": {
+        "kind": "concat",
+        "native_multiturn": {
+            "conversation_count": 100,
+            "infer_mode": "every",
+            "max_out_len": 512,
+            "request_rate": 0,
+            "work_dir": "outputs/performance/native_multiturn",
+            "result_dir": "results/performance/native_multiturn",
+            "raw_sharegpt_path": "",
+            "generation_kwargs": {
+                "temperature": 0.01,
+                "ignore_eos": False,
+            },
+        },
         "dataset_dir": "datasets/performance",
         "result_dir": "results/performance",
         "input_len": [32768],
@@ -249,6 +263,38 @@ def _load_cfg():
         if section in cfg and not isinstance(cfg[section], dict):
             raise RuntimeError("run_perf.cfg 里 {} 必须是对象".format(section))
 
+    performance_cfg = _deep_merge(_DEFAULT_CFG["performance"], cfg.get("performance", {}))
+    kind = performance_cfg.get("kind", "concat")
+    if kind not in ("concat", "native_multiturn"):
+        raise RuntimeError(
+            "performance.kind 仅支持 concat / native_multiturn，当前: {}".format(kind)
+        )
+    native_cfg = performance_cfg.get("native_multiturn", {})
+    if not isinstance(native_cfg, dict):
+        raise RuntimeError("performance.native_multiturn 必须是对象")
+    generation_kwargs = native_cfg.get("generation_kwargs", {})
+    if not isinstance(generation_kwargs, dict):
+        raise RuntimeError("performance.native_multiturn.generation_kwargs 必须是对象")
+    infer_mode = native_cfg.get("infer_mode", "every")
+    if infer_mode not in ("every", "last", "every_with_gt"):
+        raise RuntimeError(
+            "performance.native_multiturn.infer_mode 仅支持 every / last / every_with_gt，当前: {}".format(infer_mode)
+        )
+    try:
+        conversation_count = int(native_cfg.get("conversation_count", 100))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("performance.native_multiturn.conversation_count 必须是整数")
+    if conversation_count < 0:
+        raise RuntimeError("performance.native_multiturn.conversation_count 不能小于 0")
+    for field in ("max_out_len", "request_rate"):
+        if native_cfg.get(field) is not None:
+            try:
+                float(native_cfg[field])
+            except (TypeError, ValueError):
+                raise RuntimeError(
+                    "performance.native_multiturn.{} 必须是数字".format(field)
+                )
+
     return _deep_merge(_DEFAULT_CFG, cfg)
 
 
@@ -284,6 +330,25 @@ DEFAULT_MAX_OUT_LEN = _PERFORMANCE_CFG.get("default_max_out_len")
 DEFAULT_REQUEST_RATE = _PERFORMANCE_CFG.get("default_request_rate")
 DEFAULT_PFX = _PERFORMANCE_CFG.get("default_pfx")
 PERFORMANCE_AUTO_PREPARE = bool(_PERFORMANCE_CFG.get("auto_prepare", True))
+PERFORMANCE_KIND = _PERFORMANCE_CFG.get("kind", "concat")
+_NATIVE_MULTITURN_CFG = _PERFORMANCE_CFG.get("native_multiturn", {})
+NATIVE_CONVERSATION_COUNT = int(_NATIVE_MULTITURN_CFG.get("conversation_count", 100))
+NATIVE_INFER_MODE = _NATIVE_MULTITURN_CFG.get("infer_mode", "every")
+NATIVE_MAX_OUT_LEN = _NATIVE_MULTITURN_CFG.get("max_out_len", 512)
+NATIVE_REQUEST_RATE = _NATIVE_MULTITURN_CFG.get("request_rate", 0)
+NATIVE_WORK_DIR = _NATIVE_MULTITURN_CFG.get(
+    "work_dir", "outputs/performance/native_multiturn"
+)
+NATIVE_RESULT_DIR = os.path.join(
+    SCRIPT_DIR,
+    _NATIVE_MULTITURN_CFG.get(
+        "result_dir", "results/performance/native_multiturn"
+    ),
+)
+NATIVE_RAW_SHAREGPT_PATH = _NATIVE_MULTITURN_CFG.get("raw_sharegpt_path", "")
+NATIVE_GENERATION_KWARGS = _NATIVE_MULTITURN_CFG.get(
+    "generation_kwargs", {"temperature": 0.01, "ignore_eos": False}
+)
 _PERFORMANCE_MODEL_CFG_PARAMS = dict(_PERFORMANCE_CFG.get("model_cfg_params", {}))
 
 # Accuracy 精度测试配置
@@ -1207,32 +1272,43 @@ def run_ais_bench():
     return proc.returncode, proc.stdout
 
 
-def find_latest_result(before_dirs):
-    """在 OUTPUTS_ROOT 下找本次运行新生成的 timestamp 目录, 返回结果目录.
+def find_latest_result(before_dirs, output_root=OUTPUTS_ROOT):
+    """在 output_root 下找本次运行新生成的 timestamp 目录, 返回结果目录.
 
-    只看 *本次新增* 的目录: 找不到含 gsm8k.csv 的就返回 None (用例记为失败),
+    只看 *本次新增* 的目录: 找不到 performance csv/json 的就返回 None,
     绝不 fallback 到历史目录——否则失败的用例会复用旧结果, 数值张冠李戴.
     """
-    if not os.path.isdir(OUTPUTS_ROOT):
+    if not os.path.isdir(output_root):
         return None
     cur_dirs = set(
-        d for d in os.listdir(OUTPUTS_ROOT)
-        if os.path.isdir(os.path.join(OUTPUTS_ROOT, d))
+        d for d in os.listdir(output_root)
+        if os.path.isdir(os.path.join(output_root, d))
     )
     new_dirs = sorted(cur_dirs - before_dirs)
     for ts in reversed(new_dirs):
-        csv_path = os.path.join(
-            OUTPUTS_ROOT, ts, "performances", "vllm-api-general-stream", "gsm8k.csv"
-        )
-        if os.path.exists(csv_path):
-            return os.path.join(OUTPUTS_ROOT, ts, "performances", "vllm-api-general-stream")
+        performances_root = os.path.join(output_root, ts, "performances")
+        if not os.path.isdir(performances_root):
+            continue
+        for model_dir_name in sorted(os.listdir(performances_root)):
+            model_dir = os.path.join(performances_root, model_dir_name)
+            if not os.path.isdir(model_dir):
+                continue
+            for csv_path in glob.glob(os.path.join(model_dir, "*.csv")):
+                json_path = os.path.splitext(csv_path)[0] + ".json"
+                if os.path.exists(json_path):
+                    return model_dir
     return None
 
 
 def parse_result(result_dir):
-    """解析 gsm8k.csv + gsm8k.json, 返回 (perf_rows, common_rows, summary_dict)."""
-    csv_path = os.path.join(result_dir, "gsm8k.csv")
-    json_path = os.path.join(result_dir, "gsm8k.json")
+    """解析 performance csv + json, 返回 (perf_rows, common_rows, summary_dict)."""
+    csv_paths = glob.glob(os.path.join(result_dir, "*.csv"))
+    if not csv_paths:
+        raise RuntimeError("结果目录里没有 csv: {}".format(result_dir))
+    csv_path = csv_paths[0]
+    json_path = os.path.splitext(csv_path)[0] + ".json"
+    if not os.path.exists(json_path):
+        raise RuntimeError("结果目录里没有对应 json: {}".format(json_path))
 
     perf_rows = []  # [(param, stage, avg, min, max, median, p75, p90, p99, n), ...]
     with open(csv_path, "r", encoding="utf-8") as f:
@@ -1517,7 +1593,7 @@ def run_case(case, skip_run=False):
             result_dir = find_latest_result(before_dirs)
 
         if not result_dir:
-            raise RuntimeError("找不到本次输出的结果目录 (gsm8k.csv); 可能 ais_bench 未成功生成")
+            raise RuntimeError("找不到本次输出的 performance 结果目录; 可能 ais_bench 未成功生成")
 
         perf_rows, common_rows, summary = parse_result(result_dir)
         result["perf_rows"] = perf_rows
@@ -1533,9 +1609,293 @@ def run_case(case, skip_run=False):
     return result
 
 
+def _resolve_native_sharegpt_path():
+    """解析原生多轮 ShareGPT 数据路径，native 配置优先于 performance 配置。"""
+    value = NATIVE_RAW_SHAREGPT_PATH or _PERFORMANCE_CFG.get("raw_sharegpt_path", "")
+    if value:
+        return value if os.path.isabs(value) else os.path.join(SCRIPT_DIR, value)
+    return RAW_SHAREGPT_PATH
+
+
+def _prepare_native_sharegpt_dataset():
+    """准备 AISBench 原生 ShareGPT 数据；count>0 时截取前 N 组有效多轮对话。"""
+    raw_path = _ensure_raw_file(
+        _resolve_native_sharegpt_path(), SHAREGPT_URL, "ShareGPT"
+    )
+    if NATIVE_CONVERSATION_COUNT == 0:
+        print("  [native] 使用全量 ShareGPT: {}".format(raw_path))
+        return raw_path
+    if NATIVE_CONVERSATION_COUNT < 0:
+        raise RuntimeError("conversation_count 不能小于 0")
+
+    subset_dir = os.path.join(RAW_DATASET_DIR, "sharegpt")
+    os.makedirs(subset_dir, exist_ok=True)
+    subset_path = os.path.join(
+        subset_dir, "native_multiturn_top{}.json".format(NATIVE_CONVERSATION_COUNT)
+    )
+    print("  [native] 读取 ShareGPT 并截取前 {} 组有效多轮对话: {}".format(
+        NATIVE_CONVERSATION_COUNT, raw_path
+    ))
+    with open(raw_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    valid_conversations = []
+    for item in data:
+        conversations = item.get("conversations", [])
+        if len(conversations) < 2:
+            continue
+        if len(conversations) % 2 != 0:
+            continue
+        if conversations[0].get("from") != "human":
+            continue
+        valid_conversations.append(item)
+        if len(valid_conversations) >= NATIVE_CONVERSATION_COUNT:
+            break
+
+    if not valid_conversations:
+        raise RuntimeError("ShareGPT 里没有找到有效多轮对话: {}".format(raw_path))
+    if len(valid_conversations) < NATIVE_CONVERSATION_COUNT:
+        print("  [native] 有效多轮对话不足，实际取 {} 组".format(len(valid_conversations)))
+
+    tmp_path = subset_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(valid_conversations, f, ensure_ascii=False)
+    os.replace(tmp_path, subset_path)
+    print("  [native] ShareGPT 子集: {}".format(subset_path))
+    return subset_path
+
+
+def _build_native_multiturn_config(concurrency, out_len, request_rate, dataset_path, work_dir):
+    """生成 AISBench 原生 ShareGPT 多轮性能测试配置。"""
+    model_path = MODEL_CFG_PARAMS.get("path", "")
+    model_name = MODEL_CFG_PARAMS.get("model", "")
+    host_ip = MODEL_CFG_PARAMS.get("host_ip", "")
+    host_port = MODEL_CFG_PARAMS.get("host_port", "")
+    if not model_path or not model_name or not host_ip or not host_port:
+        raise RuntimeError(
+            "native_multiturn 需要在 performance.model_cfg_params 里配置 path / model / host_ip / host_port"
+        )
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    cfg_dir = os.path.join(SCRIPT_DIR, "outputs", "performance_configs")
+    os.makedirs(cfg_dir, exist_ok=True)
+    cfg_path = os.path.join(
+        cfg_dir,
+        "native_sharegpt_multiturn_bs{}_{}.py".format(concurrency, timestamp),
+    )
+
+    content = """from ais_bench.benchmark.models import VLLMCustomAPIChat
+from ais_bench.benchmark.datasets import ShareGPTDataset, ShareGPTEvaluator
+from ais_bench.benchmark.openicl.icl_prompt_template import MultiTurnPromptTemplate
+from ais_bench.benchmark.openicl.icl_retriever import ZeroRetriever
+from ais_bench.benchmark.openicl.icl_inferencer import MultiTurnGenInferencer
+from ais_bench.benchmark.summarizers.default_perf import DefaultPerfSummarizer
+from ais_bench.benchmark.calculators.default_perf_metric_calculator import DefaultPerfMetricCalculator
+from ais_bench.benchmark.utils.postprocess.model_postprocessors import extract_non_reasoning_content
+
+models = [
+    dict(
+        attr="service",
+        type=VLLMCustomAPIChat,
+        abbr="vllm-multiturn-api-chat-stream",
+        path={model_path!r},
+        model={model_name!r},
+        stream=True,
+        request_rate={request_rate!r},
+        retry=2,
+        api_key={api_key!r},
+        host_ip={host_ip!r},
+        host_port={host_port!r},
+        url="",
+        max_out_len={out_len!r},
+        batch_size={concurrency!r},
+        trust_remote_code=False,
+        generation_kwargs={generation_kwargs!r},
+        pred_postprocessor=dict(type=extract_non_reasoning_content),
+    )
+]
+
+datasets = [
+    dict(
+        abbr="sharegpt",
+        type=ShareGPTDataset,
+        disable_shuffle=True,
+        path={dataset_path!r},
+        reader_cfg=dict(
+            input_columns=["question", "answer"],
+            output_column="answer",
+        ),
+        infer_cfg=dict(
+            prompt_template=dict(
+                type=MultiTurnPromptTemplate,
+                template=dict(
+                    round=[
+                        dict(role="HUMAN", prompt="{{question}}"),
+                        dict(role="BOT", prompt="{{answer}}"),
+                    ]
+                ),
+            ),
+            retriever=dict(type=ZeroRetriever),
+            inferencer=dict(
+                type=MultiTurnGenInferencer,
+                infer_mode={infer_mode!r},
+            ),
+        ),
+        eval_cfg=dict(evaluator=dict(type=ShareGPTEvaluator)),
+    )
+]
+
+summarizer = dict(
+    attr="performance",
+    type=DefaultPerfSummarizer,
+    calculator=dict(
+        type=DefaultPerfMetricCalculator,
+        stats_list=["Average", "Min", "Max", "Median", "P75", "P90", "P99"],
+    ),
+)
+
+work_dir = {work_dir!r}
+"""
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        f.write(content.format(
+            model_path=model_path,
+            model_name=model_name,
+            host_ip=host_ip,
+            host_port=host_port,
+            api_key=MODEL_CFG_PARAMS.get("api_key", "") or "",
+            out_len=out_len,
+            concurrency=concurrency,
+            request_rate=request_rate,
+            generation_kwargs=NATIVE_GENERATION_KWARGS,
+            dataset_path=dataset_path,
+            infer_mode=NATIVE_INFER_MODE,
+            work_dir=work_dir,
+        ))
+    print("  [native] AISBench 配置: {}".format(cfg_path))
+    return cfg_path
+
+
+def run_native_multiturn_mode(args):
+    """执行 AISBench 原生 ShareGPT 多轮对话性能测试。"""
+    if args.cases:
+        raise RuntimeError("performance.kind=native_multiturn 不支持 --cases，请使用简易模式参数")
+
+    concurrencies = args.concurrency if args.concurrency else CONCURRENCIES
+    if args.skip_run and len(concurrencies) != 1:
+        raise RuntimeError("native_multiturn 的 --skip-run 目前只支持单个并发")
+
+    _init_performance_runtime()
+    dataset_path = _prepare_native_sharegpt_dataset()
+    work_dir = (
+        NATIVE_WORK_DIR
+        if os.path.isabs(NATIVE_WORK_DIR)
+        else os.path.join(SCRIPT_DIR, NATIVE_WORK_DIR)
+    )
+    os.makedirs(work_dir, exist_ok=True)
+    os.makedirs(NATIVE_RESULT_DIR, exist_ok=True)
+
+    out_len = args.max_out_len if args.max_out_len is not None else NATIVE_MAX_OUT_LEN
+    request_rate = (
+        args.request_rate if args.request_rate is not None else NATIVE_REQUEST_RATE
+    )
+    out_len = int(out_len)
+    request_rate = float(request_rate)
+
+    print("数据集类型 = ShareGPT 原生多轮")
+    print("conversation_count = {}".format(
+        "全部" if NATIVE_CONVERSATION_COUNT == 0 else NATIVE_CONVERSATION_COUNT
+    ))
+    print("infer_mode = {}".format(NATIVE_INFER_MODE))
+    print("并发列表 = {}".format(concurrencies))
+    print("输出目录 = {}".format(work_dir))
+    print("Excel 目录 = {}".format(NATIVE_RESULT_DIR))
+
+    results = []
+    for seq, concurrency in enumerate(concurrencies, start=1):
+        case_name = "NativeShareGPT-multiturn-{}并发".format(concurrency)
+        print("\n========== 用例 #{}: {} ==========".format(seq, case_name))
+        result = {
+            "case_name": case_name,
+            "dataset_type": "native_sharegpt",
+            "input_len": "native",
+            "out_len": out_len,
+            "concurrency": concurrency,
+            "request_rate": request_rate,
+            "pfx": None,
+            "summary": None,
+            "perf_rows": [],
+            "common_rows": [],
+            "status": "failed",
+            "error": "",
+        }
+        try:
+            before_dirs = set(
+                d for d in os.listdir(work_dir)
+                if os.path.isdir(os.path.join(work_dir, d))
+            ) if os.path.isdir(work_dir) else set()
+
+            if args.skip_run:
+                result_dir = find_latest_result(set(), output_root=work_dir)
+            else:
+                cfg_path = _build_native_multiturn_config(
+                    concurrency, out_len, request_rate, dataset_path, work_dir
+                )
+                cmd = [
+                    "ais_bench",
+                    cfg_path,
+                    "--mode", "perf",
+                    "--debug",
+                    "--work-dir", work_dir,
+                ]
+                print("  [native] CMD: {}".format(" ".join(cmd)))
+                _run_checked(cmd, cwd=SCRIPT_DIR, label="ais_bench native multiturn")
+                result_dir = find_latest_result(before_dirs, output_root=work_dir)
+
+            if not result_dir:
+                raise RuntimeError("找不到本次输出的 performance 结果目录")
+            perf_rows, common_rows, summary = parse_result(result_dir)
+            result.update({
+                "perf_rows": perf_rows,
+                "common_rows": common_rows,
+                "summary": summary,
+                "status": "ok",
+            })
+            print("  [ok ] 结果: {}".format(result_dir))
+        except Exception as exc:
+            result["error"] = str(exc)
+            result["status"] = "failed"
+            print("  [ERR] {}".format(exc))
+        results.append(result)
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    excel_path = args.excel or os.path.join(
+        NATIVE_RESULT_DIR,
+        "性能测试结果_native_sharegpt_multiturn_{}.xlsx".format(timestamp),
+    )
+    write_excel(results, out_path=excel_path)
+
+    print("\n========== Native ShareGPT 多轮汇总 ==========")
+    print("{:<40} {:>8} {:>8} {:>10} {:>10} {:>8}".format(
+        "用例", "并发", "rate", "E2EL", "总吞吐", "状态"))
+    for result in results:
+        summary = result["summary"] or {}
+        print("{:<40} {:>8} {:>8} {:>10} {:>10} {:>8}".format(
+            result["case_name"][:40],
+            str(result["concurrency"]),
+            str(result["request_rate"]),
+            str(summary.get("平均E2EL(ms)", "-")),
+            str(summary.get("总吞吐(token/s)", "-")),
+            result["status"],
+        ))
+
+
 def run_performance_mode(args):
-    """执行 performance 模式：拼接压测数据集 + ais_bench。"""
+    """执行 performance 模式：concat 拼接压测或 native_multiturn 原生多轮压测。"""
     global EXCEL_PATH
+
+    if PERFORMANCE_KIND == "native_multiturn":
+        run_native_multiturn_mode(args)
+        return
 
     _init_performance_runtime()
     os.makedirs(PERFORMANCE_RESULT_DIR, exist_ok=True)
@@ -1635,7 +1995,7 @@ def _apply_mode_overrides(args, mode):
         MODEL_CFG_PARAMS["host_ip"] = args.host_ip
     if args.host_port is not None:
         MODEL_CFG_PARAMS["host_port"] = args.host_port
-    if args.api_key and mode in ("agent", "accuracy"):
+    if args.api_key and (mode in ("agent", "accuracy") or (mode == "performance" and PERFORMANCE_KIND == "native_multiturn")):
         MODEL_CFG_PARAMS["api_key"] = args.api_key
     if args.path and mode == "performance":
         MODEL_CFG_PARAMS["path"] = args.path
@@ -1666,6 +2026,18 @@ def main():
                     help="accuracy 模式: eval-batch-size，默认 accuracy.eval_batch_size")
     ap.add_argument("--accuracy-work-dir", default=None,
                     help="accuracy 模式: 输出目录，默认 accuracy.work_dir")
+    ap.add_argument("--performance-kind", choices=["concat", "native_multiturn"], default=None,
+                    help="performance 模式: concat=拼接压测, native_multiturn=AISBench 原生 ShareGPT 多轮")
+    ap.add_argument("--native-conversation-count", type=int, default=None,
+                    help="native_multiturn: 取前 N 组有效多轮对话; 0=全部")
+    ap.add_argument("--native-infer-mode", choices=["every", "last", "every_with_gt"], default=None,
+                    help="native_multiturn: MultiTurnGenInferencer 模式")
+    ap.add_argument("--native-work-dir", default=None,
+                    help="native_multiturn: AISBench 输出目录")
+    ap.add_argument("--native-result-dir", default=None,
+                    help="native_multiturn: Excel 输出目录")
+    ap.add_argument("--native-raw-sharegpt-path", default=None,
+                    help="native_multiturn: 原始 ShareGPT JSON 路径")
     # 简易模式 (向后兼容)
     ap.add_argument("-i", "--input-len", type=int, nargs="+", default=None,
                     help="简易模式: 输入长度列表")
@@ -1685,7 +2057,7 @@ def main():
     ap.add_argument("--model", dest="model", default=None, help="模型名")
     ap.add_argument("--host-ip", dest="host_ip", default=None, help="服务 IP")
     ap.add_argument("--host-port", dest="host_port", type=int, default=None, help="服务端口")
-    ap.add_argument("--api-key", dest="api_key", default=None, help="agent / accuracy 模式 OpenAI API Key")
+    ap.add_argument("--api-key", dest="api_key", default=None, help="agent / accuracy / native_multiturn 模式 OpenAI API Key")
     ap.add_argument("--excel", default=None, help="Excel 输出路径 (默认当前文件夹下)")
     ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
     args = ap.parse_args()
@@ -1693,6 +2065,29 @@ def main():
     global RUN_MODE, RUN_MODES
     global AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
     global ACCURACY_DATASET, ACCURACY_EVAL_BATCH_SIZE, ACCURACY_WORK_DIR
+    global PERFORMANCE_KIND, NATIVE_CONVERSATION_COUNT, NATIVE_INFER_MODE
+    global NATIVE_WORK_DIR, NATIVE_RESULT_DIR, NATIVE_RAW_SHAREGPT_PATH
+
+    if args.performance_kind:
+        PERFORMANCE_KIND = args.performance_kind
+    if args.native_conversation_count is not None:
+        NATIVE_CONVERSATION_COUNT = args.native_conversation_count
+    if args.native_infer_mode:
+        NATIVE_INFER_MODE = args.native_infer_mode
+    if args.native_work_dir:
+        NATIVE_WORK_DIR = args.native_work_dir
+    if args.native_result_dir:
+        NATIVE_RESULT_DIR = (
+            args.native_result_dir
+            if os.path.isabs(args.native_result_dir)
+            else os.path.join(SCRIPT_DIR, args.native_result_dir)
+        )
+    if args.native_raw_sharegpt_path:
+        NATIVE_RAW_SHAREGPT_PATH = args.native_raw_sharegpt_path
+    if PERFORMANCE_KIND not in ("concat", "native_multiturn"):
+        raise RuntimeError("performance.kind 仅支持 concat / native_multiturn")
+    if NATIVE_CONVERSATION_COUNT < 0:
+        raise RuntimeError("native conversation_count 不能小于 0")
 
     if args.agent_dataset:
         AGENT_DATASET = args.agent_dataset
