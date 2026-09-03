@@ -221,11 +221,11 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 
 ## 2、配置 run_perf.cfg
 
-所有可修改参数放在脚本同目录下的 `run_perf.cfg` 中，支持中文注释。**最外层固定只有三个 key：`mode`、`agent`、`performance`**。两种模式各自的模型配置、benchmark 配置和自动准备开关完全分开，互不混用。
+所有可修改参数放在脚本同目录下的 `run_perf.cfg` 中，支持中文注释。**最外层固定只有四个 key：`mode`、`agent`、`accuracy`、`performance`**。各模式各自的模型配置、benchmark 配置和自动准备开关完全分开，互不混用。
 
 ```jsonc
 {
-  // performance = 拼接压测数据集；agent = 原生 SWE-bench
+  // performance = 拼接压测数据集；agent = 原生 SWE-bench；accuracy = evalscope 精度测试
   "mode": "performance",
 
   // Agent 模式专用配置
@@ -246,6 +246,34 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
     "benchmark_dir": "",
     "benchmark_ref": "",
     "install_requirements": true
+  },
+
+  // Accuracy 精度测试专用配置
+  "accuracy": {
+    "dataset": "gpqa_diamond",
+    "eval_batch_size": 8,
+    "work_dir": "outputs/accuracy",
+    "auto_prepare": true,
+    "model_cfg_params": {
+      "model": "DeepSeek-V4-Flash-w8a8-mtp",
+      "host_ip": "11.87.191.83",
+      "host_port": 18004,
+      "api_key": "EMPTY"
+    },
+    "generation_config": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "max_tokens": 130000,
+      "timeout": 900,
+      "retries": 2
+    },
+    "dataset_args": {
+      "gpqa_diamond": {
+        "filters": {
+          "remove_until": "</think>"
+        }
+      }
+    }
   },
 
   // Performance 模式专用配置
@@ -284,7 +312,6 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 
 | 字段 | 说明 |
 |------|------|
-| `mode` | 运行模式：performance / agent |
 | `agent.dataset` | 官方 SWE-bench 数据集：lite / verified / full / multilingual |
 | `agent.count` | 按数据集原始顺序取前 N 条；0 表示全部 |
 | `agent.step_limit` | 单个 instance 的最大步数 |
@@ -296,6 +323,19 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 | `agent.benchmark_dir` | benchmark 本地目录；留空使用脚本旁的 `benchmark/` |
 | `agent.benchmark_ref` | benchmark 分支或 tag |
 | `agent.install_requirements` | 是否自动安装 benchmark requirements |
+
+### Accuracy 节点字段
+
+| 字段 | 说明 |
+|------|------|
+| `mode` | 运行模式：performance / agent / accuracy |
+| `accuracy.dataset` | evalscope 数据集，当前默认 `gpqa_diamond` |
+| `accuracy.eval_batch_size` | evalscope `--eval-batch-size` |
+| `accuracy.work_dir` | 精度测试输出目录 |
+| `accuracy.auto_prepare` | 缺失 evalscope 时是否自动 `pip install evalscope` |
+| `accuracy.model_cfg_params` | 精度测试专用模型和服务配置 |
+| `accuracy.generation_config` | 生成参数，等价于 `--generation-config` |
+| `accuracy.dataset_args` | 数据集参数，等价于 `--dataset-args` |
 
 ### Performance 节点字段
 
@@ -323,11 +363,36 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 >
 > 💡 **Agent 模式**：读取 `agent.model_cfg_params`，自动生成原生 SWE-bench 配置；`agent.count` 按官方数据集原始顺序截取。
 >
+> 💡 **Accuracy 模式**：读取 `accuracy.model_cfg_params`，自动安装 evalscope 并执行 GPQA Diamond 精度测试。
+>
 > 💡 `performance.model_cfg_params.path` 同时作为 tokenizer 模型路径，不再需要单独配置 `MODEL_PATH`。
 
 ## 3、启动测试
 
-run_perf.py 支持两种模式：
+run_perf.py 支持三种模式：performance（性能压测）、agent（原生 SWE-bench）、accuracy（evalscope 精度测试）。
+
+### 模式三：Accuracy 精度测试
+
+```shell
+python3 run_perf.py --mode accuracy \
+    --model DeepSeek-V4-Flash-w8a8-mtp \
+    --host-ip 11.87.191.83 \
+    --host-port 18004
+```
+
+等价于原来的 `gpqa.sh`：
+
+```shell
+evalscope eval \
+  --model DeepSeek-V4-Flash-w8a8-mtp \
+  --api-url http://11.87.191.83:18004/v1 \
+  --api-key EMPTY \
+  --eval-type openai_api \
+  --datasets gpqa_diamond \
+  --eval-batch-size 8 \
+  --generation-config '{"temperature":1.0,"top_p":0.95,"max_tokens":130000,"timeout":900,"retries":2}' \
+  --dataset-args '{"gpqa_diamond":{"filters":{"remove_until":"</think>"}}}'
+```
 
 ### 模式一：JSON 用例驱动（推荐）
 
@@ -405,7 +470,8 @@ python3 run_perf.py -i 32768 -c 1 8 16 --skip-run
 
 | 参数 | 说明 |
 |------|------|
-| `--cases` | JSON 用例文件路径（主模式） |
+| `--mode` | 运行模式：performance / agent / accuracy |
+| `--cases` | JSON 用例文件路径（performance 模式） |
 | `-i / --input-len` | 输入长度列表（简易模式） |
 | `-c / --concurrency` | 并发数列表（简易模式） |
 | `--dataset-type` | 数据集类型列表：gsm / sharegpt / swebench（简易模式） |
@@ -416,12 +482,16 @@ python3 run_perf.py -i 32768 -c 1 8 16 --skip-run
 | `--model` | 模型名 |
 | `--host-ip` | 服务 IP |
 | `--host-port` | 服务端口 |
+| `--api-key` | accuracy 模式 OpenAI API Key |
+| `--accuracy-dataset` | accuracy 模式 evalscope 数据集 |
+| `--accuracy-batch-size` | accuracy 模式并发批次大小 |
+| `--accuracy-work-dir` | accuracy 模式输出目录 |
 | `--excel` | Excel 输出路径（默认脚本所在目录下） |
 | `--skip-run` | 只解析已有输出，不重新跑 |
 
 ## 4、输出
 
-执行完毕后，outputs 和 Excel 统一落在**脚本所在目录**下。按 `(数据集类型, 输入长度, pfx)` 分组生成 Excel：
+Performance 的 outputs 和 Excel 统一落在**脚本所在目录**下。按 `(数据集类型, 输入长度, pfx)` 分组生成 Excel；Agent 输出在 `outputs/agent/`；Accuracy 输出在 `outputs/accuracy/`。
 
 ```
 性能测试结果_sharegpt_in32768.xlsx
@@ -437,7 +507,7 @@ python3 run_perf.py -i 32768 -c 1 8 16 --skip-run
 ## 5、自动化流水线关键设计
 
 - **路径自动定位**：`AIS_BENCH_ROOT` 通过 `import ais_bench_benchmark` 自动定位安装目录，支持标准安装和 `pip install -e` 开发安装；脚本放任意位置都能跑，outputs 和 Excel 统一落在脚本所在目录
-- **配置外置**：所有可修改参数放在 `run_perf.cfg` 的 `mode / agent / performance` 三个节点中，不再需要改脚本本身；`performance.model_cfg_params.path` 同时作为 tokenizer 模型路径
+- **配置外置**：所有可修改参数放在 `run_perf.cfg` 的 `mode / agent / accuracy / performance` 四个节点中，不再需要改脚本本身；`performance.model_cfg_params.path` 同时作为 tokenizer 模型路径
 - **配置注入靠正则改文件**：`set_model_cfg()` 用正则把参数写进 ais_bench 的模型配置 py，不侵入 ais_bench 代码；**静态配置**（path/model/host_ip/host_port）启动时写一次，**动态配置**（batch_size/max_out_len/request_rate）每个用例跑之前单独写
 - **数据集绑定靠软链**：`ln -sf 选中.jsonl test.jsonl train.jsonl`，同时软链 test 和 train（ais_bench 启动会检查 train.jsonl 是否存在），切换用例零拷贝
 - **结果目录只认"本次新增"**：运行前快照 outputs 目录，运行后只在新目录里找 gsm8k.csv —— **防止失败用例复用历史结果、数值张冠李戴**

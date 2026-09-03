@@ -1,6 +1,22 @@
-# LLM 自动化性能测试工具集
+# LLM 自动化测试工具集
 
 ## 版本历史
+
+### v1.2.0 — 2026-09-03
+
+- **新增 `accuracy` 精度测试模式**
+  - `mode=accuracy`：通过 `evalscope` 跑精度测试
+  - 默认数据集：`gpqa_diamond`
+  - 默认并发批次：`eval_batch_size=8`
+  - 缺失 `evalscope` 时自动执行 `pip install evalscope`
+- **新增独立 `accuracy` 配置节点**
+  - 精度测试的模型、服务、数据集、生成参数全部与 agent / performance 分离
+- **新增命令行参数**
+  - `--mode accuracy`
+  - `--accuracy-dataset`
+  - `--accuracy-batch-size`
+  - `--accuracy-work-dir`
+  - `--api-key`
 
 ### v1.1.0 — 2026-09-02
 
@@ -54,7 +70,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| `run_perf.py` | 自动测试入口，支持 performance 和 agent 两种模式 |
+| `run_perf.py` | 自动测试入口，支持 performance、agent、accuracy 三种模式 |
 | `run_perf.cfg` | JSONC 配置文件，支持中文注释 |
 | `gen_datasets.py` | 提前批量生成 performance 压测数据集 |
 | `process_dataset.py` | 压测数据集制作脚本 |
@@ -64,7 +80,7 @@
 ## 快速开始
 
 ```bash
-# 1. 编辑配置；最外层只有 mode / agent / performance
+# 1. 编辑配置；最外层只有 mode / agent / accuracy / performance
 vim run_perf.cfg
 
 # 2. performance：拼接压测数据集 + ais_bench
@@ -73,22 +89,25 @@ python3 run_perf.py --mode performance --cases cases.json
 # 3. agent：原生 SWE-bench，取 Lite 前 10 条
 python3 run_perf.py --mode agent --agent-dataset lite --agent-count 10
 
-# 4. 可选：只推理 / 只评测
+# 4. accuracy：evalscope 精度测试，默认 GPQA Diamond
+python3 run_perf.py --mode accuracy
+
+# 5. 可选：只推理 / 只评测
 python3 run_perf.py --mode agent --agent-run-mode infer
 python3 run_perf.py --mode agent --agent-run-mode eval
 
-# 5. 可选：预生成 performance 数据集
+# 6. 可选：预生成 performance 数据集
 python3 gen_datasets.py --dry-run
 python3 gen_datasets.py
 ```
 
 ## run_perf.cfg 配置结构
 
-配置最外层固定为三个 key：`mode`、`agent`、`performance`。`mode` 选择当前运行模式，两个模式自己的参数分别放在同名节点下，互不混用。
+配置最外层固定为四个 key：`mode`、`agent`、`accuracy`、`performance`。`mode` 选择当前运行模式，各模式自己的参数分别放在同名节点下，互不混用。
 
 ```jsonc
 {
-  // performance = 拼接压测数据集；agent = 原生 SWE-bench
+  // performance = 拼接压测数据集；agent = 原生 SWE-bench；accuracy = evalscope 精度测试
   "mode": "performance",
 
   "agent": {
@@ -111,6 +130,33 @@ python3 gen_datasets.py
     "benchmark_dir": "",
     "benchmark_ref": "",
     "install_requirements": true
+  },
+
+  "accuracy": {
+    "dataset": "gpqa_diamond",
+    "eval_batch_size": 8,
+    "work_dir": "outputs/accuracy",
+    "auto_prepare": true,
+    "model_cfg_params": {
+      "model": "xxx",
+      "host_ip": "11.87.191.83",
+      "host_port": 18004,
+      "api_key": "EMPTY"
+    },
+    "generation_config": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "max_tokens": 130000,
+      "timeout": 900,
+      "retries": 2
+    },
+    "dataset_args": {
+      "gpqa_diamond": {
+        "filters": {
+          "remove_until": "</think>"
+        }
+      }
+    }
   },
 
   "performance": {
@@ -160,6 +206,18 @@ python3 gen_datasets.py
 | `agent.benchmark_ref` | benchmark 分支或 tag |
 | `agent.install_requirements` | 是否自动安装 benchmark requirements |
 
+### Accuracy 节点
+
+| 字段 | 说明 |
+|------|------|
+| `accuracy.dataset` | evalscope 数据集，默认 `gpqa_diamond` |
+| `accuracy.eval_batch_size` | evalscope `--eval-batch-size` |
+| `accuracy.work_dir` | 精度测试输出目录 |
+| `accuracy.auto_prepare` | 缺失 evalscope 时是否自动安装 |
+| `accuracy.model_cfg_params` | 精度测试专用模型和服务配置 |
+| `accuracy.generation_config` | 生成参数，等价于 `--generation-config` |
+| `accuracy.dataset_args` | 数据集参数，等价于 `--dataset-args` |
+
 ### Performance 节点
 
 | 字段 | 说明 |
@@ -184,6 +242,7 @@ python3 gen_datasets.py
 datasets/performance/   # performance 生成的 jsonl
 results/performance/    # performance Excel
 outputs/agent/          # agent 原生 SWE-bench 输出
+outputs/accuracy/       # accuracy 精度测试输出
 outputs/agent_configs/  # agent 自动生成的 ais_bench 配置
 raw_datasets/           # 自动下载的原始数据
 ```

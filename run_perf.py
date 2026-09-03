@@ -10,6 +10,9 @@ ais_bench 自动性能测试脚本 (JSON 用例驱动)
     # agent 模式: 跑原生 SWE-bench, 支持 lite / verified / full / multilingual
     python3 run_perf.py --mode agent --agent-dataset lite --agent-count 10
 
+    # accuracy 模式: 跑 evalscope 精度测试, 当前默认 GPQA Diamond
+    python3 run_perf.py --mode accuracy
+
     # performance 简易模式: 直接命令行指定 (向后兼容)
     python3 run_perf.py -i 32768 -c 1 8 16 --max-out-len 1024 --request-rate 0.5
     python3 run_perf.py -i 32768 -c 1 8 16 --dataset-type gsm sharegpt  # 多数据集类型
@@ -57,8 +60,6 @@ import time
 import shutil
 import zipfile
 
-import openpyxl
-from openpyxl.styles import Font, Alignment
 
 # ============================================================
 #  配置文件加载 (run_perf.cfg)
@@ -82,6 +83,27 @@ _DEFAULT_CFG = {
         "benchmark_dir": "",
         "benchmark_ref": "",
         "install_requirements": True,
+    },
+    "accuracy": {
+        "dataset": "gpqa_diamond",
+        "eval_batch_size": 8,
+        "work_dir": "outputs/accuracy",
+        "auto_prepare": True,
+        "model_cfg_params": {},
+        "generation_config": {
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "max_tokens": 130000,
+            "timeout": 900,
+            "retries": 2,
+        },
+        "dataset_args": {
+            "gpqa_diamond": {
+                "filters": {
+                    "remove_until": "</think>"
+                }
+            }
+        },
     },
     "performance": {
         "dataset_dir": "datasets/performance",
@@ -171,7 +193,7 @@ def _strip_jsonc_comments(text):
     return "".join(out)
 
 
-_CFG_TOP_LEVEL_KEYS = {"mode", "agent", "performance"}
+_CFG_TOP_LEVEL_KEYS = {"mode", "agent", "accuracy", "performance"}
 
 
 def _load_cfg():
@@ -186,15 +208,15 @@ def _load_cfg():
     unknown_keys = sorted(set(cfg) - _CFG_TOP_LEVEL_KEYS)
     if unknown_keys:
         raise RuntimeError(
-            "run_perf.cfg 最外层只支持 mode / agent / performance，发现多余字段: {}".format(
+            "run_perf.cfg 最外层只支持 mode / agent / accuracy / performance，发现多余字段: {}".format(
                 ", ".join(unknown_keys)
             )
         )
 
     mode = cfg.get("mode", "performance")
-    if mode not in ("performance", "agent"):
-        raise RuntimeError("run_perf.cfg mode 仅支持 performance / agent，当前: {}".format(mode))
-    for section in ("agent", "performance"):
+    if mode not in ("performance", "agent", "accuracy"):
+        raise RuntimeError("run_perf.cfg mode 仅支持 performance / agent / accuracy，当前: {}".format(mode))
+    for section in ("agent", "accuracy", "performance"):
         if section in cfg and not isinstance(cfg[section], dict):
             raise RuntimeError("run_perf.cfg 里 {} 必须是对象".format(section))
 
@@ -206,6 +228,7 @@ _cfg = _load_cfg()
 RUN_MODE = _cfg.get("mode", "performance")
 _AGENT_CFG = _cfg.get("agent", {})
 _PERFORMANCE_CFG = _cfg.get("performance", {})
+_ACCURACY_CFG = _cfg.get("accuracy", {})
 
 # Agent 模式配置
 AGENT_DATASET = _AGENT_CFG.get("dataset", "lite")
@@ -233,13 +256,56 @@ DEFAULT_PFX = _PERFORMANCE_CFG.get("default_pfx")
 PERFORMANCE_AUTO_PREPARE = bool(_PERFORMANCE_CFG.get("auto_prepare", True))
 _PERFORMANCE_MODEL_CFG_PARAMS = dict(_PERFORMANCE_CFG.get("model_cfg_params", {}))
 
-# 按当前模式选择模型配置
-MODEL_CFG_PARAMS = dict(
-    _AGENT_MODEL_CFG_PARAMS if RUN_MODE == "agent" else _PERFORMANCE_MODEL_CFG_PARAMS
+# Accuracy 精度测试配置
+ACCURACY_DATASET = _ACCURACY_CFG.get("dataset", "gpqa_diamond")
+ACCURACY_EVAL_BATCH_SIZE = int(_ACCURACY_CFG.get("eval_batch_size", 8))
+ACCURACY_WORK_DIR = _ACCURACY_CFG.get("work_dir", "outputs/accuracy")
+ACCURACY_AUTO_PREPARE = bool(_ACCURACY_CFG.get("auto_prepare", True))
+_ACCURACY_MODEL_CFG_PARAMS = dict(_ACCURACY_CFG.get("model_cfg_params", {}))
+ACCURACY_GENERATION_CONFIG = _ACCURACY_CFG.get(
+    "generation_config",
+    {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "max_tokens": 130000,
+        "timeout": 900,
+        "retries": 2,
+    },
+)
+ACCURACY_DATASET_ARGS = _ACCURACY_CFG.get(
+    "dataset_args",
+    {"gpqa_diamond": {"filters": {"remove_until": "</think>"}}},
 )
 
+
+def _model_cfg_for_mode(mode):
+    """按模式返回对应的模型配置，避免不同模式互相混用。"""
+    return {
+        "agent": _AGENT_MODEL_CFG_PARAMS,
+        "accuracy": _ACCURACY_MODEL_CFG_PARAMS,
+        "performance": _PERFORMANCE_MODEL_CFG_PARAMS,
+    }.get(mode, _PERFORMANCE_MODEL_CFG_PARAMS)
+
+
+def _benchmark_cfg_for_mode(mode):
+    """按模式返回 benchmark 配置；accuracy 模式不需要 ais_bench。"""
+    if mode == "agent":
+        return _AGENT_CFG
+    if mode == "performance":
+        return _PERFORMANCE_CFG
+    return {
+        "benchmark_repo": "",
+        "benchmark_ref": "",
+        "benchmark_dir": "",
+        "install_requirements": False,
+    }
+
+
+# 按当前模式选择模型配置
+MODEL_CFG_PARAMS = dict(_model_cfg_for_mode(RUN_MODE))
+
 # Benchmark 环境配置：agent 模式读 agent 节，performance 模式读 performance 节
-_BENCHMARK_CFG = _AGENT_CFG if RUN_MODE == "agent" else _PERFORMANCE_CFG
+_BENCHMARK_CFG = _benchmark_cfg_for_mode(RUN_MODE)
 BENCHMARK_REPO = _BENCHMARK_CFG.get("benchmark_repo", "")
 BENCHMARK_REF = _BENCHMARK_CFG.get("benchmark_ref", "")
 INSTALL_REQUIREMENTS = bool(_BENCHMARK_CFG.get("install_requirements", True))
@@ -654,6 +720,90 @@ def run_agent_mode():
     print("  [agent] 原生 SWE-bench 完成")
 
 
+# -------------------- Accuracy 模式: evalscope 精度测试 --------------------
+def _ensure_accuracy_environment():
+    """确保 evalscope 可用；缺失时按配置自动安装。"""
+    if shutil.which("evalscope"):
+        print("  [accuracy] evalscope 环境已就绪")
+        return
+
+    if not ACCURACY_AUTO_PREPARE:
+        raise RuntimeError("evalscope 不存在，且 accuracy.auto_prepare=false")
+
+    print("  [accuracy] 未找到 evalscope，开始自动安装")
+    _run_checked(
+        [sys.executable, "-m", "pip", "install", "evalscope"],
+        cwd=SCRIPT_DIR,
+        label="pip install evalscope",
+    )
+    if not shutil.which("evalscope"):
+        raise RuntimeError(
+            "evalscope 安装后仍不可用。请检查 Python 环境和 PATH，或手动执行: pip install evalscope"
+        )
+    print("  [accuracy] evalscope 安装完成")
+
+
+def _accuracy_json_arg(value, name):
+    """把 dict 转成 CLI JSON 字符串；字符串则校验后原样传给 evalscope。"""
+    if isinstance(value, str):
+        try:
+            json.loads(value)
+        except Exception as exc:
+            raise RuntimeError("accuracy.{} 不是合法 JSON: {}".format(name, exc))
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except Exception as exc:
+        raise RuntimeError("accuracy.{} 序列化失败: {}".format(name, exc))
+
+
+def run_accuracy_mode():
+    """执行 evalscope 精度测试，当前默认 GPQA Diamond。"""
+    print("========== Accuracy 模式: evalscope 精度测试 ==========")
+    print("数据集 = {}".format(ACCURACY_DATASET))
+    print("eval_batch_size = {}".format(ACCURACY_EVAL_BATCH_SIZE))
+    print("工作目录 = {}".format(ACCURACY_WORK_DIR))
+
+    _ensure_accuracy_environment()
+
+    model_name = MODEL_CFG_PARAMS.get("model", "")
+    host_ip = MODEL_CFG_PARAMS.get("host_ip", "")
+    host_port = MODEL_CFG_PARAMS.get("host_port", "")
+    api_key = MODEL_CFG_PARAMS.get("api_key", "EMPTY") or "EMPTY"
+    if not model_name or not host_ip or not host_port:
+        raise RuntimeError(
+            "accuracy 模式需要在 accuracy.model_cfg_params 里配置 model / host_ip / host_port"
+        )
+
+    api_url = "http://{}:{}/v1".format(host_ip, host_port)
+    work_dir = (
+        ACCURACY_WORK_DIR
+        if os.path.isabs(ACCURACY_WORK_DIR)
+        else os.path.join(SCRIPT_DIR, ACCURACY_WORK_DIR)
+    )
+    os.makedirs(work_dir, exist_ok=True)
+
+    cmd = [
+        "evalscope",
+        "eval",
+        "--model", model_name,
+        "--api-url", api_url,
+        "--api-key", api_key,
+        "--eval-type", "openai_api",
+        "--datasets", ACCURACY_DATASET,
+        "--eval-batch-size", str(ACCURACY_EVAL_BATCH_SIZE),
+        "--generation-config", _accuracy_json_arg(
+            ACCURACY_GENERATION_CONFIG, "generation_config"
+        ),
+        "--dataset-args", _accuracy_json_arg(
+            ACCURACY_DATASET_ARGS, "dataset_args"
+        ),
+    ]
+    print("  [accuracy] CMD: {}".format(" ".join(cmd)))
+    _run_checked(cmd, cwd=work_dir, label="evalscope accuracy")
+    print("  [accuracy] 精度测试完成")
+
+
 # 路径常量
 def _find_existing_ais_bench_root():
     """定位 ais_bench benchmark 安装根目录。
@@ -775,16 +925,25 @@ def _ensure_ais_bench_root():
             raise
 
 
-AIS_BENCH_ROOT = _ensure_ais_bench_root()
+# performance 模式延迟初始化，避免 accuracy 模式强制依赖 ais_bench。
+AIS_BENCH_ROOT = None
 PROCESS_DATASET_SCRIPT = os.path.join(SCRIPT_DIR, "process_dataset.py")
-MODEL_CFG = os.path.join(
-    AIS_BENCH_ROOT,
-    "benchmark", "configs", "models", "vllm_api", "vllm_api_general_stream.py",
-)
+MODEL_CFG = None
 DATASET_DIR = PERFORMANCE_DATASET_DIR          # performance 模式生成的 jsonl 数据集目录
 RUN_CWD = SCRIPT_DIR                           # ais_bench 运行目录，不随执行位置变化
 OUTPUTS_ROOT = os.path.join(RUN_CWD, "outputs", "default")
 EXCEL_PATH = os.path.join(PERFORMANCE_RESULT_DIR, "性能测试结果.xlsx")
+
+
+def _init_performance_runtime():
+    """初始化 performance 模式运行时依赖的 ais_bench 路径。"""
+    global AIS_BENCH_ROOT, MODEL_CFG
+    AIS_BENCH_ROOT = _ensure_ais_bench_root()
+    MODEL_CFG = os.path.join(
+        AIS_BENCH_ROOT,
+        "benchmark", "configs", "models", "vllm_api", "vllm_api_general_stream.py",
+    )
+    os.makedirs(PERFORMANCE_RESULT_DIR, exist_ok=True)
 
 # 数据集类型 → (显示名, 文件前缀, 原始路径配置key, process_dataset --datasettype 值)
 _DATASET_INFO = {
@@ -1171,6 +1330,11 @@ def write_excel(cases, out_path=None):
     out_path: 输出路径, 默认用全局 EXCEL_PATH。
     """
     out_path = out_path or EXCEL_PATH
+
+    # performance 模式才需要 openpyxl；accuracy 模式不强制依赖 Excel 库。
+    import openpyxl
+    from openpyxl.styles import Font, Alignment
+
     wb = openpyxl.Workbook()
 
     # ---- 汇总 sheet ----
@@ -1332,16 +1496,22 @@ def run_case(case, skip_run=False):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="ais_bench 自动性能测试 (JSON 用例驱动)")
+    ap = argparse.ArgumentParser(description="xllm 自动测试入口：性能 / Agent / 精度")
     ap.add_argument("--cases", help="performance 模式: JSON 用例文件路径")
-    ap.add_argument("--mode", choices=["performance", "agent"], default=None,
-                    help="运行模式: performance=拼接压测数据集, agent=原生 SWE-bench")
+    ap.add_argument("--mode", choices=["performance", "agent", "accuracy"], default=None,
+                    help="运行模式: performance=拼接压测数据集, agent=原生 SWE-bench, accuracy=evalscope 精度测试")
     ap.add_argument("--agent-dataset", choices=sorted(_AGENT_DATASET_HF_ID), default=None,
                     help="agent 模式: SWE-bench 数据集类型")
     ap.add_argument("--agent-count", type=int, default=None,
                     help="agent 模式: 取前 N 条; 0 表示全部")
     ap.add_argument("--agent-run-mode", choices=["infer", "eval", "all"], default=None,
                     help="agent 模式: infer=只推理, eval=只评测, all=推理+评测")
+    ap.add_argument("--accuracy-dataset", default=None,
+                    help="accuracy 模式: evalscope 数据集，默认 accuracy.dataset")
+    ap.add_argument("--accuracy-batch-size", type=int, default=None,
+                    help="accuracy 模式: eval-batch-size，默认 accuracy.eval_batch_size")
+    ap.add_argument("--accuracy-work-dir", default=None,
+                    help="accuracy 模式: 输出目录，默认 accuracy.work_dir")
     # 简易模式 (向后兼容)
     ap.add_argument("-i", "--input-len", type=int, nargs="+", default=None,
                     help="简易模式: 输入长度列表")
@@ -1361,19 +1531,19 @@ def main():
     ap.add_argument("--model", dest="model", default=None, help="模型名")
     ap.add_argument("--host-ip", dest="host_ip", default=None, help="服务 IP")
     ap.add_argument("--host-port", dest="host_port", type=int, default=None, help="服务端口")
+    ap.add_argument("--api-key", dest="api_key", default=None, help="accuracy 模式 OpenAI API Key")
     ap.add_argument("--excel", default=None, help="Excel 输出路径 (默认当前文件夹下)")
     ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
     args = ap.parse_args()
 
     global EXCEL_PATH, MODEL_CFG_PARAMS, RUN_MODE
     global AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
+    global ACCURACY_DATASET, ACCURACY_EVAL_BATCH_SIZE, ACCURACY_WORK_DIR
     global BENCHMARK_REPO, BENCHMARK_REF, INSTALL_REQUIREMENTS, BENCHMARK_DIR
     if args.mode:
         RUN_MODE = args.mode
-        MODEL_CFG_PARAMS = dict(
-            _AGENT_MODEL_CFG_PARAMS if RUN_MODE == "agent" else _PERFORMANCE_MODEL_CFG_PARAMS
-        )
-        benchmark_cfg = _AGENT_CFG if RUN_MODE == "agent" else _PERFORMANCE_CFG
+        MODEL_CFG_PARAMS = dict(_model_cfg_for_mode(RUN_MODE))
+        benchmark_cfg = _benchmark_cfg_for_mode(RUN_MODE)
         BENCHMARK_REPO = benchmark_cfg.get("benchmark_repo", "")
         BENCHMARK_REF = benchmark_cfg.get("benchmark_ref", "")
         INSTALL_REQUIREMENTS = bool(benchmark_cfg.get("install_requirements", True))
@@ -1389,11 +1559,29 @@ def main():
         AGENT_COUNT = args.agent_count
     if args.agent_run_mode:
         AGENT_RUN_MODE = args.agent_run_mode
+    if args.accuracy_dataset:
+        ACCURACY_DATASET = args.accuracy_dataset
+    if args.accuracy_batch_size is not None:
+        ACCURACY_EVAL_BATCH_SIZE = args.accuracy_batch_size
+    if args.accuracy_work_dir:
+        ACCURACY_WORK_DIR = args.accuracy_work_dir
 
     if RUN_MODE == "agent":
         run_agent_mode()
         return
+    if RUN_MODE == "accuracy":
+        if args.model:
+            MODEL_CFG_PARAMS["model"] = args.model
+        if args.host_ip:
+            MODEL_CFG_PARAMS["host_ip"] = args.host_ip
+        if args.host_port is not None:
+            MODEL_CFG_PARAMS["host_port"] = args.host_port
+        if args.api_key:
+            MODEL_CFG_PARAMS["api_key"] = args.api_key
+        run_accuracy_mode()
+        return
 
+    _init_performance_runtime()
     os.makedirs(PERFORMANCE_RESULT_DIR, exist_ok=True)
     if args.excel:
         EXCEL_PATH = args.excel
