@@ -2,6 +2,16 @@
 
 ## 版本历史
 
+### v1.3.1 — 2026-09-03
+
+- **Performance 两个子类型配置完全隔离**
+  - `concat` 专属配置统一放在 `performance.concat`
+  - `native_multiturn` 专属配置统一放在 `performance.native_multiturn`
+  - 公共配置只保留模型服务、benchmark 环境、自动准备、原始数据下载目录和下载 URL
+- **命令行默认值不再跨子类型泄漏**
+  - 不传 `--max-out-len` / `--request-rate` / `-c` 时，concat 和 native_multiturn 分别读取自己的配置
+  - 传入这些参数时，只覆盖当前 performance 子类型
+
 ### v1.3.0 — 2026-09-03
 
 - **Performance 模式新增 `native_multiturn` 子类型**
@@ -215,9 +225,41 @@ python3 gen_datasets.py
   "performance": {
     // concat=拼接压测；native_multiturn=AISBench 原生 ShareGPT 多轮压测
     "kind": "concat",
+
+    "model_cfg_params": {
+      "path": "/export/home/models/xxx",
+      "model": "xxx",
+      "host_ip": "11.87.191.83",
+      "host_port": 18004
+    },
+    "auto_prepare": true,
+    "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
+    "benchmark_dir": "",
+    "benchmark_ref": "",
+    "install_requirements": true,
+    "raw_dataset_dir": "raw_datasets",
+    "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
+    "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
+    "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet",
+
+    "concat": {
+      "dataset_dir": "datasets/performance",
+      "result_dir": "results/performance",
+      "input_len": [32768],
+      "concurrencies": [1, 8, 16],
+      "default_max_out_len": null,
+      "default_request_rate": null,
+      "default_pfx": null,
+      "dataset_types": ["sharegpt"],
+      "raw_gsm_path": "",
+      "raw_sharegpt_path": "",
+      "raw_swebench_path": ""
+    },
+
     "native_multiturn": {
       "conversation_count": 100,
       "infer_mode": "every",
+      "concurrencies": [1, 8, 16],
       "max_out_len": 512,
       "request_rate": 0,
       "work_dir": "outputs/performance/native_multiturn",
@@ -227,33 +269,7 @@ python3 gen_datasets.py
         "temperature": 0.01,
         "ignore_eos": false
       }
-    },
-    "dataset_dir": "datasets/performance",
-    "result_dir": "results/performance",
-    "input_len": [32768],
-    "concurrencies": [1, 8, 16],
-    "default_max_out_len": null,
-    "default_request_rate": null,
-    "default_pfx": null,
-    "model_cfg_params": {
-      "path": "/export/home/models/xxx",
-      "model": "xxx",
-      "host_ip": "11.87.191.83",
-      "host_port": 18004
-    },
-    "dataset_types": ["sharegpt"],
-    "raw_gsm_path": "",
-    "raw_sharegpt_path": "",
-    "raw_swebench_path": "",
-    "auto_prepare": true,
-    "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
-    "benchmark_dir": "",
-    "benchmark_ref": "",
-    "install_requirements": true,
-    "raw_dataset_dir": "raw_datasets",
-    "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
-    "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
-    "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet"
+    }
   }
 }
 ```
@@ -292,31 +308,44 @@ python3 gen_datasets.py
 | `accuracy.generation_config` | 生成参数，等价于 `--generation-config` |
 | `accuracy.dataset_args` | 数据集参数，等价于 `--dataset-args` |
 
-### Performance 节点
+### Performance 公共字段
 
 | 字段 | 说明 |
 |------|------|
 | `performance.kind` | performance 子类型：concat / native_multiturn |
-| `performance.native_multiturn.conversation_count` | 原生多轮取前 N 组有效对话；0=全量 |
+| `performance.model_cfg_params` | Performance 两种子类型共用的模型和服务配置 |
+| `performance.auto_prepare` | 是否自动准备 benchmark 和原始数据 |
+| `performance.benchmark_repo` / `performance.benchmark_dir` / `performance.benchmark_ref` / `performance.install_requirements` | benchmark 环境公共配置 |
+| `performance.raw_dataset_dir` | 公共原始数据下载目录 |
+| `performance.gsm8k_url` / `performance.sharegpt_url` / `performance.swebench_url` | 公共原始数据下载地址 |
+
+### Performance concat 专属字段
+
+| 字段 | 说明 |
+|------|------|
+| `performance.concat.dataset_dir` | concat 生成的压测数据集目录 |
+| `performance.concat.result_dir` | concat Excel 结果目录 |
+| `performance.concat.input_len` | concat 输入 token 长度列表；native_multiturn 忽略 |
+| `performance.concat.concurrencies` | concat 并发列表；native_multiturn 忽略 |
+| `performance.concat.default_max_out_len` | concat 默认输出长度；native_multiturn 忽略 |
+| `performance.concat.default_request_rate` | concat 默认请求速率；native_multiturn 忽略 |
+| `performance.concat.default_pfx` | concat 前缀缓存比例；native_multiturn 忽略 |
+| `performance.concat.dataset_types` | concat 数据集类型：gsm / sharegpt / swebench |
+| `performance.concat.raw_gsm_path` / `performance.concat.raw_sharegpt_path` / `performance.concat.raw_swebench_path` | concat 原始数据路径 |
+
+### Performance native_multiturn 专属字段
+
+| 字段 | 说明 |
+|------|------|
+| `performance.native_multiturn.conversation_count` | 取前 N 组有效多轮对话；0=全量 |
 | `performance.native_multiturn.infer_mode` | every / last / every_with_gt |
-| `performance.native_multiturn.max_out_len` | 原生多轮单次请求最大输出 |
-| `performance.native_multiturn.request_rate` | 原生多轮请求速率；0=打满 |
+| `performance.native_multiturn.concurrencies` | 原生多轮专属并发列表 |
+| `performance.native_multiturn.max_out_len` | 原生多轮专属单次请求最大输出 |
+| `performance.native_multiturn.request_rate` | 原生多轮专属请求速率；0=打满 |
 | `performance.native_multiturn.work_dir` | AISBench 原生多轮输出目录 |
 | `performance.native_multiturn.result_dir` | 原生多轮 Excel 目录 |
-| `performance.native_multiturn.raw_sharegpt_path` | 原始 ShareGPT 路径；空值复用 `performance.raw_sharegpt_path` |
-| `performance.dataset_dir` | concat 生成的压测数据集目录 |
-| `performance.result_dir` | Excel 结果目录 |
-| `performance.input_len` | 简易模式输入长度列表 |
-| `performance.concurrencies` | 简易模式并发列表 |
-| `performance.default_max_out_len` | 默认输出长度；null 表示不改 |
-| `performance.default_request_rate` | 默认请求速率；null 表示不改，0 表示打满 |
-| `performance.default_pfx` | 默认前缀缓存比例；null 表示普通数据集 |
-| `performance.model_cfg_params` | Performance 模式专用模型和服务配置 |
-| `performance.dataset_types` | gsm / sharegpt / swebench |
-| `performance.raw_*_path` | 原始数据路径；空值自动下载 |
-| `performance.auto_prepare` | 是否自动准备 benchmark 和原始数据 |
-| `performance.raw_dataset_dir` | 原始数据默认下载目录 |
-| `performance.*_url` | 原始数据下载地址 |
+| `performance.native_multiturn.raw_sharegpt_path` | 原生多轮专属原始 ShareGPT 路径；留空使用公共 `raw_dataset_dir` |
+| `performance.native_multiturn.generation_kwargs` | 原生多轮生成参数 |
 
 ## 输出
 

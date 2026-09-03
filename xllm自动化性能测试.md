@@ -280,36 +280,13 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
   "performance": {
     // concat=拼接压测；native_multiturn=AISBench 原生 ShareGPT 多轮压测
     "kind": "concat",
-    "native_multiturn": {
-      "conversation_count": 100, // 取前 N 组有效多轮对话；0=全量
-      "infer_mode": "every",    // every / last / every_with_gt
-      "max_out_len": 512,
-      "request_rate": 0,
-      "work_dir": "outputs/performance/native_multiturn",
-      "result_dir": "results/performance/native_multiturn",
-      "raw_sharegpt_path": "",
-      "generation_kwargs": {
-        "temperature": 0.01,
-        "ignore_eos": false
-      }
-    },
-    "dataset_dir": "datasets/performance",
-    "result_dir": "results/performance",
-    "input_len": [32768],
-    "concurrencies": [1, 8, 16],
-    "default_max_out_len": null,
-    "default_request_rate": null,
-    "default_pfx": null,
+
     "model_cfg_params": {
       "path": "/export/home/models/DeepSeek-V4-Flash-w8a8-mtp",
       "model": "DeepSeek-V4-Flash-w8a8-mtp",
       "host_ip": "11.87.191.83",
       "host_port": 18004
     },
-    "dataset_types": ["gsm", "sharegpt", "swebench"],
-    "raw_gsm_path": "/data/GSM8K.jsonl",
-    "raw_sharegpt_path": "/data/ShareGPT_V3_unfiltered_cleaned_split.json",
-    "raw_swebench_path": "/data/SWE-bench/data/test-00000-of-00001.parquet",
     "auto_prepare": true,
     "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
     "benchmark_dir": "",
@@ -318,7 +295,36 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
     "raw_dataset_dir": "raw_datasets",
     "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
     "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
-    "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet"
+    "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet",
+
+    "concat": {
+      "dataset_dir": "datasets/performance",
+      "result_dir": "results/performance",
+      "input_len": [32768],
+      "concurrencies": [1, 8, 16],
+      "default_max_out_len": null,
+      "default_request_rate": null,
+      "default_pfx": null,
+      "dataset_types": ["gsm", "sharegpt", "swebench"],
+      "raw_gsm_path": "/data/GSM8K.jsonl",
+      "raw_sharegpt_path": "/data/ShareGPT_V3_unfiltered_cleaned_split.json",
+      "raw_swebench_path": "/data/SWE-bench/data/test-00000-of-00001.parquet"
+    },
+
+    "native_multiturn": {
+      "conversation_count": 100, // 取前 N 组有效多轮对话；0=全量
+      "infer_mode": "every",    // every / last / every_with_gt
+      "concurrencies": [1, 8, 16], // 原生多轮专属并发
+      "max_out_len": 512,       // 原生多轮专属输出长度
+      "request_rate": 0,
+      "work_dir": "outputs/performance/native_multiturn",
+      "result_dir": "results/performance/native_multiturn",
+      "raw_sharegpt_path": "",
+      "generation_kwargs": {
+        "temperature": 0.01,
+        "ignore_eos": false
+      }
+    }
   }
 }
 ```
@@ -357,37 +363,48 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 | `accuracy.generation_config` | 生成参数，等价于 `--generation-config` |
 | `accuracy.dataset_args` | 数据集参数，等价于 `--dataset-args` |
 
-### Performance 节点字段
+### Performance 公共字段
 
 | 字段 | 说明 |
 |------|------|
 | `performance.kind` | performance 子类型：concat=拼接压测，native_multiturn=AISBench 原生 ShareGPT 多轮压测 |
+| `performance.model_cfg_params` | Performance 两种子类型共用的模型和服务配置；`path` 同时用于 tokenizer |
+| `performance.auto_prepare` | 是否自动准备 benchmark 和原始数据 |
+| `performance.benchmark_repo` / `performance.benchmark_dir` / `performance.benchmark_ref` / `performance.install_requirements` | benchmark 环境公共配置 |
+| `performance.raw_dataset_dir` | 公共原始数据下载目录 |
+| `performance.gsm8k_url` / `performance.sharegpt_url` / `performance.swebench_url` | 公共原始数据下载地址 |
+
+### Performance concat 专属字段
+
+| 字段 | 说明 |
+|------|------|
+| `performance.concat.dataset_dir` | concat 生成的压测数据集目录 |
+| `performance.concat.result_dir` | concat Excel 结果目录 |
+| `performance.concat.input_len` | concat 输入 token 长度列表；native_multiturn 忽略 |
+| `performance.concat.concurrencies` | concat 并发列表；native_multiturn 忽略 |
+| `performance.concat.default_max_out_len` | concat 默认输出长度；native_multiturn 忽略 |
+| `performance.concat.default_request_rate` | concat 默认请求速率；native_multiturn 忽略 |
+| `performance.concat.default_pfx` | concat 前缀缓存比例；native_multiturn 忽略 |
+| `performance.concat.dataset_types` | concat 数据集类型：gsm / sharegpt / swebench |
+| `performance.concat.raw_gsm_path` / `performance.concat.raw_sharegpt_path` / `performance.concat.raw_swebench_path` | concat 原始数据路径 |
+
+### Performance native_multiturn 专属字段
+
+| 字段 | 说明 |
+|------|------|
 | `performance.native_multiturn.conversation_count` | 取前 N 组有效多轮对话；0=全量 |
 | `performance.native_multiturn.infer_mode` | every / last / every_with_gt |
-| `performance.native_multiturn.max_out_len` | 单次请求最大输出 token |
-| `performance.native_multiturn.request_rate` | 请求发送速率；0=打满 |
+| `performance.native_multiturn.concurrencies` | 原生多轮专属并发列表 |
+| `performance.native_multiturn.max_out_len` | 原生多轮专属单次请求最大输出 token |
+| `performance.native_multiturn.request_rate` | 原生多轮专属请求发送速率；0=打满 |
 | `performance.native_multiturn.work_dir` | AISBench 原生多轮输出目录 |
 | `performance.native_multiturn.result_dir` | 原生多轮 Excel 输出目录 |
-| `performance.native_multiturn.raw_sharegpt_path` | 原始 ShareGPT 路径；留空复用 `performance.raw_sharegpt_path` |
-| `performance.dataset_dir` | concat 模式生成的压测数据集目录 |
-| `performance.result_dir` | Excel 结果目录 |
-| `performance.input_len` | 简易模式输入长度列表 |
-| `performance.concurrencies` | 简易模式并发数列表（batch_size） |
-| `performance.default_max_out_len` | 默认输出长度（null = 不改） |
-| `performance.default_request_rate` | 默认 request_rate（null = 不改，0 = 打满） |
-| `performance.default_pfx` | 默认 pfx（null = 普通数据集） |
-| `performance.model_cfg_params` | Performance 模式专用模型配置；`path` 同时用于 tokenizer |
-| `performance.dataset_types` | 数据集类型列表：gsm / sharegpt / swebench |
-| `performance.raw_gsm_path` | GSM8K 原始路径；留空自动下载 |
-| `performance.raw_sharegpt_path` | ShareGPT 原始 JSON 路径；留空自动下载 |
-| `performance.raw_swebench_path` | SWE-bench parquet 路径；留空自动下载 |
-| `performance.auto_prepare` | 是否自动准备 benchmark 和原始数据 |
-| `performance.raw_dataset_dir` | 原始数据默认下载目录 |
-| `performance.gsm8k_url` / `performance.sharegpt_url` / `performance.swebench_url` | 原始数据下载地址 |
+| `performance.native_multiturn.raw_sharegpt_path` | 原生多轮专属原始 ShareGPT 路径；留空使用公共 `raw_dataset_dir` |
+| `performance.native_multiturn.generation_kwargs` | 原生多轮生成参数 |
 
 > 💡 **路径自动定位**：`AIS_BENCH_ROOT` 通过 `import ais_bench_benchmark` 自动定位安装目录，支持标准安装和 `pip install -e` 开发安装。
 >
-> 💡 **Performance 数据集**：优先从 `performance.dataset_dir` 查找；缺失时自动下载原始数据并调用 `process_dataset.py` 生成。
+> 💡 **Performance 数据集**：优先从 `performance.concat.dataset_dir` 查找；缺失时自动下载原始数据并调用 `process_dataset.py` 生成。
 >
 > 💡 **Agent 模式**：读取 `agent.model_cfg_params`，自动生成原生 SWE-bench 配置；`agent.count` 按官方数据集原始顺序截取。
 >
@@ -442,7 +459,10 @@ python3 run_perf.py --mode performance \
   "kind": "native_multiturn",
   "native_multiturn": {
     "conversation_count": 100,
-    "infer_mode": "every"
+    "infer_mode": "every",
+    "concurrencies": [1, 8, 16],
+    "max_out_len": 512,
+    "request_rate": 0
   }
 }
 ```
@@ -454,6 +474,10 @@ python3 run_perf.py --mode performance \
 - `infer_mode=every` 会按多轮请求统计性能指标
 - 原生多轮不生成 `ShareGPT-in{LEN}-bs{BS}.jsonl`，也不经过 `process_dataset.py`
 - 原生多轮没有固定 `input_len`，不能和 concat 模式的固定输入长度直接做同维度对比
+- concat 的 `performance.concat.input_len` / `performance.concat.concurrencies` / `performance.concat.default_max_out_len` / `performance.concat.default_request_rate` / `performance.concat.default_pfx` 在 native_multiturn 下全部忽略
+- native_multiturn 使用自己的 `performance.native_multiturn.concurrencies` / `max_out_len` / `request_rate`
+- `performance.model_cfg_params`、benchmark 环境配置、`raw_dataset_dir` 和下载 URL 是两种子类型的公共配置
+- 命令行 `-c` / `--max-out-len` / `--request-rate` 只覆盖当前 performance 子类型；不传时分别读取各自 cfg 默认值
 - 输出目录：
   - AISBench：`outputs/performance/native_multiturn/`
   - Excel：`results/performance/native_multiturn/`
@@ -580,18 +604,18 @@ python3 run_perf.py -i 32768 -c 1 8 16 --skip-run
 | `--native-infer-mode` | 原生多轮推理模式：every / last / every_with_gt |
 | `--native-work-dir` | 原生多轮 AISBench 输出目录 |
 | `--native-result-dir` | 原生多轮 Excel 输出目录 |
-| `--cases` | JSON 用例文件路径（performance 模式） |
-| `-i / --input-len` | 输入长度列表（简易模式） |
-| `-c / --concurrency` | 并发数列表（简易模式） |
-| `--dataset-type` | 数据集类型列表：gsm / sharegpt / swebench（简易模式） |
-| `--max-out-len` | 输出长度 |
-| `--request-rate` | 请求速率（0 = 打满） |
-| `--pfx` | 前缀缓存重复率% 列表（简易模式），0 或不传 = 普通数据集 |
+| `--cases` | concat JSON 用例文件路径；native_multiturn 不支持 |
+| `-i / --input-len` | concat 输入长度列表；native_multiturn 忽略 |
+| `-c / --concurrency` | performance 通用并发覆盖；concat/native 分别使用各自默认值 |
+| `--dataset-type` | concat 数据集类型列表：gsm / sharegpt / swebench；native_multiturn 忽略 |
+| `--max-out-len` | performance 通用输出长度覆盖；concat/native 分别使用各自默认值 |
+| `--request-rate` | performance 通用请求速率覆盖；concat/native 分别使用各自默认值 |
+| `--pfx` | concat 前缀缓存重复率% 列表；native_multiturn 忽略 |
 | `--path` | 模型权重路径 |
 | `--model` | 模型名 |
 | `--host-ip` | 服务 IP |
 | `--host-port` | 服务端口 |
-| `--api-key` | accuracy 模式 OpenAI API Key |
+| `--api-key` | agent / accuracy / native_multiturn OpenAI API Key |
 | `--accuracy-dataset` | accuracy 模式 evalscope 数据集 |
 | `--accuracy-batch-size` | accuracy 模式并发批次大小 |
 | `--accuracy-work-dir` | accuracy 模式输出目录 |

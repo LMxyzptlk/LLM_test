@@ -106,10 +106,39 @@ _DEFAULT_CFG = {
         },
     },
     "performance": {
+        # Performance 公共配置
         "kind": "concat",
+        "model_cfg_params": {},
+        "auto_prepare": True,
+        "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
+        "benchmark_dir": "",
+        "benchmark_ref": "",
+        "install_requirements": True,
+        "raw_dataset_dir": "raw_datasets",
+        "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
+        "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
+        "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet",
+
+        # concat 拼接压测专属配置
+        "concat": {
+            "dataset_dir": "datasets/performance",
+            "result_dir": "results/performance",
+            "input_len": [32768],
+            "concurrencies": [1, 8, 16],
+            "default_max_out_len": None,
+            "default_request_rate": None,
+            "default_pfx": None,
+            "dataset_types": ["sharegpt"],
+            "raw_gsm_path": "",
+            "raw_sharegpt_path": "",
+            "raw_swebench_path": "",
+        },
+
+        # native_multiturn 原生多轮专属配置
         "native_multiturn": {
             "conversation_count": 100,
             "infer_mode": "every",
+            "concurrencies": [1, 8, 16],
             "max_out_len": 512,
             "request_rate": 0,
             "work_dir": "outputs/performance/native_multiturn",
@@ -120,27 +149,6 @@ _DEFAULT_CFG = {
                 "ignore_eos": False,
             },
         },
-        "dataset_dir": "datasets/performance",
-        "result_dir": "results/performance",
-        "input_len": [32768],
-        "concurrencies": [1, 8, 16],
-        "default_max_out_len": None,
-        "default_request_rate": None,
-        "default_pfx": None,
-        "model_cfg_params": {},
-        "dataset_types": ["sharegpt"],
-        "raw_gsm_path": "",
-        "raw_sharegpt_path": "",
-        "raw_swebench_path": "",
-        "auto_prepare": True,
-        "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
-        "benchmark_dir": "",
-        "benchmark_ref": "",
-        "install_requirements": True,
-        "raw_dataset_dir": "raw_datasets",
-        "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
-        "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
-        "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet",
     },
 }
 
@@ -264,14 +272,72 @@ def _load_cfg():
             raise RuntimeError("run_perf.cfg 里 {} 必须是对象".format(section))
 
     performance_cfg = _deep_merge(_DEFAULT_CFG["performance"], cfg.get("performance", {}))
+    allowed_performance_keys = {
+        "kind", "model_cfg_params", "auto_prepare",
+        "benchmark_repo", "benchmark_dir", "benchmark_ref", "install_requirements",
+        "raw_dataset_dir", "gsm8k_url", "sharegpt_url", "swebench_url",
+        "concat", "native_multiturn",
+    }
+    unknown_performance_keys = sorted(set(performance_cfg) - allowed_performance_keys)
+    if unknown_performance_keys:
+        raise RuntimeError(
+            "performance 下只允许公共字段、concat 和 native_multiturn，发现多余字段: {}".format(
+                ", ".join(unknown_performance_keys)
+            )
+        )
+
     kind = performance_cfg.get("kind", "concat")
     if kind not in ("concat", "native_multiturn"):
         raise RuntimeError(
             "performance.kind 仅支持 concat / native_multiturn，当前: {}".format(kind)
         )
+
+    concat_cfg = performance_cfg.get("concat", {})
+    if not isinstance(concat_cfg, dict):
+        raise RuntimeError("performance.concat 必须是对象")
     native_cfg = performance_cfg.get("native_multiturn", {})
     if not isinstance(native_cfg, dict):
         raise RuntimeError("performance.native_multiturn 必须是对象")
+
+    allowed_concat_keys = {
+        "dataset_dir", "result_dir", "input_len", "concurrencies",
+        "default_max_out_len", "default_request_rate", "default_pfx",
+        "dataset_types", "raw_gsm_path", "raw_sharegpt_path", "raw_swebench_path",
+    }
+    unknown_concat_keys = sorted(set(concat_cfg) - allowed_concat_keys)
+    if unknown_concat_keys:
+        raise RuntimeError(
+            "performance.concat 里发现未知字段: {}".format(", ".join(unknown_concat_keys))
+        )
+
+    allowed_native_keys = {
+        "conversation_count", "infer_mode", "concurrencies", "max_out_len",
+        "request_rate", "work_dir", "result_dir", "raw_sharegpt_path",
+        "generation_kwargs",
+    }
+    unknown_native_keys = sorted(set(native_cfg) - allowed_native_keys)
+    if unknown_native_keys:
+        raise RuntimeError(
+            "performance.native_multiturn 里发现未知字段: {}".format(
+                ", ".join(unknown_native_keys)
+            )
+        )
+
+    for subtype, subtype_cfg in (
+        ("concat", concat_cfg),
+        ("native_multiturn", native_cfg),
+    ):
+        concurrencies = subtype_cfg.get("concurrencies", [1, 8, 16])
+        if not isinstance(concurrencies, (list, tuple)) or not concurrencies:
+            raise RuntimeError(
+                "performance.{}.concurrencies 必须是非空数组".format(subtype)
+            )
+        for concurrency in concurrencies:
+            if not isinstance(concurrency, int) or concurrency <= 0:
+                raise RuntimeError(
+                    "performance.{}.concurrencies 里的并发必须是正整数".format(subtype)
+                )
+
     generation_kwargs = native_cfg.get("generation_kwargs", {})
     if not isinstance(generation_kwargs, dict):
         raise RuntimeError("performance.native_multiturn.generation_kwargs 必须是对象")
@@ -315,25 +381,33 @@ AGENT_RUN_MODE = _AGENT_CFG.get("run_mode", "all")
 AGENT_AUTO_PREPARE = bool(_AGENT_CFG.get("auto_prepare", True))
 _AGENT_MODEL_CFG_PARAMS = dict(_AGENT_CFG.get("model_cfg_params", {}))
 
-# Performance 模式配置
+# Performance 公共配置
+PERFORMANCE_AUTO_PREPARE = bool(_PERFORMANCE_CFG.get("auto_prepare", True))
+PERFORMANCE_KIND = _PERFORMANCE_CFG.get("kind", "concat")
+_PERFORMANCE_MODEL_CFG_PARAMS = dict(_PERFORMANCE_CFG.get("model_cfg_params", {}))
+
+# Performance concat 专属配置
+_CONCAT_CFG = _PERFORMANCE_CFG.get("concat", {})
 PERFORMANCE_DATASET_DIR = os.path.join(
     SCRIPT_DIR,
-    _PERFORMANCE_CFG.get("dataset_dir", "datasets/performance"),
+    _CONCAT_CFG.get("dataset_dir", "datasets/performance"),
 )
 PERFORMANCE_RESULT_DIR = os.path.join(
     SCRIPT_DIR,
-    _PERFORMANCE_CFG.get("result_dir", "results/performance"),
+    _CONCAT_CFG.get("result_dir", "results/performance"),
 )
-INPUT_LEN = _PERFORMANCE_CFG.get("input_len", [32768])
-CONCURRENCIES = _PERFORMANCE_CFG.get("concurrencies", [1, 8, 16])
-DEFAULT_MAX_OUT_LEN = _PERFORMANCE_CFG.get("default_max_out_len")
-DEFAULT_REQUEST_RATE = _PERFORMANCE_CFG.get("default_request_rate")
-DEFAULT_PFX = _PERFORMANCE_CFG.get("default_pfx")
-PERFORMANCE_AUTO_PREPARE = bool(_PERFORMANCE_CFG.get("auto_prepare", True))
-PERFORMANCE_KIND = _PERFORMANCE_CFG.get("kind", "concat")
+INPUT_LEN = _CONCAT_CFG.get("input_len", [32768])
+CONCURRENCIES = _CONCAT_CFG.get("concurrencies", [1, 8, 16])
+DEFAULT_MAX_OUT_LEN = _CONCAT_CFG.get("default_max_out_len")
+DEFAULT_REQUEST_RATE = _CONCAT_CFG.get("default_request_rate")
+DEFAULT_PFX = _CONCAT_CFG.get("default_pfx")
+DATASET_TYPES = _CONCAT_CFG.get("dataset_types", ["sharegpt"])
+
+# Performance native_multiturn 专属配置
 _NATIVE_MULTITURN_CFG = _PERFORMANCE_CFG.get("native_multiturn", {})
 NATIVE_CONVERSATION_COUNT = int(_NATIVE_MULTITURN_CFG.get("conversation_count", 100))
 NATIVE_INFER_MODE = _NATIVE_MULTITURN_CFG.get("infer_mode", "every")
+NATIVE_CONCURRENCIES = _NATIVE_MULTITURN_CFG.get("concurrencies", [1, 8, 16])
 NATIVE_MAX_OUT_LEN = _NATIVE_MULTITURN_CFG.get("max_out_len", 512)
 NATIVE_REQUEST_RATE = _NATIVE_MULTITURN_CFG.get("request_rate", 0)
 NATIVE_WORK_DIR = _NATIVE_MULTITURN_CFG.get(
@@ -349,7 +423,6 @@ NATIVE_RAW_SHAREGPT_PATH = _NATIVE_MULTITURN_CFG.get("raw_sharegpt_path", "")
 NATIVE_GENERATION_KWARGS = _NATIVE_MULTITURN_CFG.get(
     "generation_kwargs", {"temperature": 0.01, "ignore_eos": False}
 )
-_PERFORMANCE_MODEL_CFG_PARAMS = dict(_PERFORMANCE_CFG.get("model_cfg_params", {}))
 
 # Accuracy 精度测试配置
 ACCURACY_DATASET = _ACCURACY_CFG.get("dataset", "gpqa_diamond")
@@ -421,8 +494,7 @@ def _set_active_mode(mode):
 # 按当前模式选择模型配置
 _set_active_mode(RUN_MODE)
 
-# Performance 数据集配置
-DATASET_TYPES = _PERFORMANCE_CFG.get("dataset_types", ["sharegpt"])
+# Performance 公共原始数据下载配置
 RAW_DATASET_DIR = os.path.join(
     SCRIPT_DIR,
     _PERFORMANCE_CFG.get("raw_dataset_dir", "raw_datasets"),
@@ -431,22 +503,24 @@ GSM8K_URL = _PERFORMANCE_CFG.get("gsm8k_url", "")
 SHAREGPT_URL = _PERFORMANCE_CFG.get("sharegpt_url", "")
 SWEBENCH_URL = _PERFORMANCE_CFG.get("swebench_url", "")
 
+
 def _resolve_raw_path(value, default_name):
     if value:
         return value if os.path.isabs(value) else os.path.join(SCRIPT_DIR, value)
     return os.path.join(RAW_DATASET_DIR, default_name)
 
 
+# concat 拼接压测专属原始数据路径
 RAW_GSM_PATH = _resolve_raw_path(
-    _PERFORMANCE_CFG.get("raw_gsm_path", ""),
+    _CONCAT_CFG.get("raw_gsm_path", ""),
     os.path.join("gsm8k", "train.jsonl"),
 )
 RAW_SHAREGPT_PATH = _resolve_raw_path(
-    _PERFORMANCE_CFG.get("raw_sharegpt_path", ""),
+    _CONCAT_CFG.get("raw_sharegpt_path", ""),
     "ShareGPT_V3_unfiltered_cleaned_split.json",
 )
 RAW_SWEBENCH_PATH = _resolve_raw_path(
-    _PERFORMANCE_CFG.get("raw_swebench_path", ""),
+    _CONCAT_CFG.get("raw_swebench_path", ""),
     os.path.join("swe-bench", "test-00000-of-00001.parquet"),
 )
 
@@ -1610,11 +1684,15 @@ def run_case(case, skip_run=False):
 
 
 def _resolve_native_sharegpt_path():
-    """解析原生多轮 ShareGPT 数据路径，native 配置优先于 performance 配置。"""
-    value = NATIVE_RAW_SHAREGPT_PATH or _PERFORMANCE_CFG.get("raw_sharegpt_path", "")
-    if value:
+    """解析原生多轮 ShareGPT 数据路径。
+
+    native_multiturn 的数据路径完全独立；留空时使用公共 raw_dataset_dir 下的默认路径，
+    不回退 concat 模式的 performance.raw_sharegpt_path。
+    """
+    if NATIVE_RAW_SHAREGPT_PATH:
+        value = NATIVE_RAW_SHAREGPT_PATH
         return value if os.path.isabs(value) else os.path.join(SCRIPT_DIR, value)
-    return RAW_SHAREGPT_PATH
+    return os.path.join(RAW_DATASET_DIR, "ShareGPT_V3_unfiltered_cleaned_split.json")
 
 
 def _prepare_native_sharegpt_dataset():
@@ -1780,7 +1858,7 @@ def run_native_multiturn_mode(args):
     if args.cases:
         raise RuntimeError("performance.kind=native_multiturn 不支持 --cases，请使用简易模式参数")
 
-    concurrencies = args.concurrency if args.concurrency else CONCURRENCIES
+    concurrencies = args.concurrency if args.concurrency else NATIVE_CONCURRENCIES
     if args.skip_run and len(concurrencies) != 1:
         raise RuntimeError("native_multiturn 的 --skip-run 目前只支持单个并发")
 
@@ -1902,6 +1980,11 @@ def run_performance_mode(args):
     if args.excel:
         EXCEL_PATH = args.excel
 
+    default_out_len = args.max_out_len if args.max_out_len is not None else DEFAULT_MAX_OUT_LEN
+    default_request_rate = (
+        args.request_rate if args.request_rate is not None else DEFAULT_REQUEST_RATE
+    )
+
     print("数据集目录 = {}".format(DATASET_DIR))
     print("执行目录(cwd) = {}".format(RUN_CWD))
     print("Excel 输出 = {}".format(EXCEL_PATH))
@@ -1934,9 +2017,9 @@ def run_performance_mode(args):
                             "seq": str(seq),
                             "dataset_type": dt,
                             "input_len": il,
-                            "out_len": args.max_out_len,
+                            "out_len": default_out_len,
                             "concurrency": c,
-                            "request_rate": args.request_rate,
+                            "request_rate": default_request_rate,
                             "pfx": pfx,
                         })
                         seq += 1
@@ -2042,13 +2125,13 @@ def main():
     ap.add_argument("-i", "--input-len", type=int, nargs="+", default=None,
                     help="简易模式: 输入长度列表")
     ap.add_argument("-c", "--concurrency", type=int, nargs="+", default=None,
-                    help="简易模式: 并发数列表 (batch_size)")
-    ap.add_argument("--max-out-len", type=int, default=DEFAULT_MAX_OUT_LEN,
-                    help="简易模式: 输出长度")
-    ap.add_argument("--request-rate", type=float, default=DEFAULT_REQUEST_RATE,
-                    help="简易模式: request_rate (0=尽量打满)")
-    ap.add_argument("--pfx", type=int, nargs="+", default=[DEFAULT_PFX],
-                    help="简易模式: 前缀缓存重复率%% 列表 (可多个); 0 或不传=普通数据集")
+                    help="performance 通用覆盖: 并发数列表；concat/native 各自使用自己的默认值")
+    ap.add_argument("--max-out-len", type=int, default=None,
+                    help="performance 通用覆盖: 输出长度；concat/native 各自使用自己的默认值")
+    ap.add_argument("--request-rate", type=float, default=None,
+                    help="performance 通用覆盖: request_rate；concat/native 各自使用自己的默认值")
+    ap.add_argument("--pfx", type=int, nargs="+", default=None,
+                    help="concat 模式: 前缀缓存重复率%% 列表；native_multiturn 忽略")
     ap.add_argument("--dataset-type", dest="dataset_type", nargs="+", default=None,
                     choices=["gsm", "sharegpt", "swebench"],
                     help="简易模式: 数据集类型列表 (gsm/sharegpt/swebench), 默认用脚本顶部 DATASET_TYPES")
