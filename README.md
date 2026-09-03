@@ -2,6 +2,23 @@
 
 ## 版本历史
 
+### v1.2.1 — 2026-09-03
+
+- **支持混合运行**
+  - `mode` 可以设置为 `performance` / `agent` / `accuracy` 的任意组合
+  - 支持一个、两个或三个模式
+  - 支持逗号字符串和 JSON 数组两种写法
+  - 按配置或命令行给出的顺序依次执行
+  - 自动去重，避免同一模式重复跑
+- **命令行 `--mode` 支持组合**
+  - `--mode agent performance`
+  - `--mode agent,performance,accuracy`
+  - `--mode accuracy --mode agent`
+- **混合运行时自动切换各模式专属配置**
+  - agent 使用 `agent` 节点
+  - accuracy 使用 `accuracy` 节点
+  - performance 使用 `performance` 节点
+
 ### v1.2.0 — 2026-09-03
 
 - **新增 `accuracy` 精度测试模式**
@@ -70,7 +87,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| `run_perf.py` | 自动测试入口，支持 performance、agent、accuracy 三种模式 |
+| `run_perf.py` | 自动测试入口，支持 performance、agent、accuracy 三种模式及任意组合 |
 | `run_perf.cfg` | JSONC 配置文件，支持中文注释 |
 | `gen_datasets.py` | 提前批量生成 performance 压测数据集 |
 | `process_dataset.py` | 压测数据集制作脚本 |
@@ -92,23 +109,29 @@ python3 run_perf.py --mode agent --agent-dataset lite --agent-count 10
 # 4. accuracy：evalscope 精度测试，默认 GPQA Diamond
 python3 run_perf.py --mode accuracy
 
-# 5. 可选：只推理 / 只评测
+# 5. 混合运行：agent -> performance -> accuracy
+python3 run_perf.py --mode agent performance accuracy
+
+# 6. 逗号写法等价
+python3 run_perf.py --mode agent,performance,accuracy
+
+# 7. 可选：只推理 / 只评测
 python3 run_perf.py --mode agent --agent-run-mode infer
 python3 run_perf.py --mode agent --agent-run-mode eval
 
-# 6. 可选：预生成 performance 数据集
+# 8. 可选：预生成 performance 数据集
 python3 gen_datasets.py --dry-run
 python3 gen_datasets.py
 ```
 
 ## run_perf.cfg 配置结构
 
-配置最外层固定为四个 key：`mode`、`agent`、`accuracy`、`performance`。`mode` 选择当前运行模式，各模式自己的参数分别放在同名节点下，互不混用。
+配置最外层固定为四个 key：`mode`、`agent`、`accuracy`、`performance`。`mode` 支持单个模式或混合模式，各模式自己的参数分别放在同名节点下，互不混用。
 
 ```jsonc
 {
-  // performance = 拼接压测数据集；agent = 原生 SWE-bench；accuracy = evalscope 精度测试
-  "mode": "performance",
+  // 支持单个、逗号字符串或数组；混合模式按数组/字符串顺序执行
+  "mode": ["agent", "performance", "accuracy"],
 
   "agent": {
     // lite / verified / full / multilingual
@@ -189,6 +212,12 @@ python3 gen_datasets.py
   }
 }
 ```
+
+### Mode 字段
+
+| 字段 | 说明 |
+|------|------|
+| `mode` | 单个模式或混合模式；支持字符串、逗号字符串和数组 |
 
 ### Agent 节点
 

@@ -221,12 +221,12 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 
 ## 2、配置 run_perf.cfg
 
-所有可修改参数放在脚本同目录下的 `run_perf.cfg` 中，支持中文注释。**最外层固定只有四个 key：`mode`、`agent`、`accuracy`、`performance`**。各模式各自的模型配置、benchmark 配置和自动准备开关完全分开，互不混用。
+所有可修改参数放在脚本同目录下的 `run_perf.cfg` 中，支持中文注释。**最外层固定只有四个 key：`mode`、`agent`、`accuracy`、`performance`**。`mode` 支持单个模式或 `performance / agent / accuracy` 任意组合；各模式各自的模型配置、benchmark 配置和自动准备开关完全分开，互不混用。
 
 ```jsonc
 {
-  // performance = 拼接压测数据集；agent = 原生 SWE-bench；accuracy = evalscope 精度测试
-  "mode": "performance",
+  // 支持单个、逗号字符串或数组；混合模式按数组/字符串顺序执行
+  "mode": ["agent", "performance", "accuracy"],
 
   // Agent 模式专用配置
   "agent": {
@@ -308,6 +308,12 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 }
 ```
 
+### Mode 字段
+
+| 字段 | 说明 |
+|------|------|
+| `mode` | 单个模式或混合模式：performance / agent / accuracy 任意组合，支持字符串和数组 |
+
 ### Agent 节点字段
 
 | 字段 | 说明 |
@@ -328,7 +334,6 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 
 | 字段 | 说明 |
 |------|------|
-| `mode` | 运行模式：performance / agent / accuracy |
 | `accuracy.dataset` | evalscope 数据集，当前默认 `gpqa_diamond` |
 | `accuracy.eval_batch_size` | evalscope `--eval-batch-size` |
 | `accuracy.work_dir` | 精度测试输出目录 |
@@ -369,7 +374,7 @@ python3 process_dataset.py --datasettype SWEBENCH --bs 32 --inputlen 32768 \
 
 ## 3、启动测试
 
-run_perf.py 支持三种模式：performance（性能压测）、agent（原生 SWE-bench）、accuracy（evalscope 精度测试）。
+run_perf.py 支持三种模式：performance（性能压测）、agent（原生 SWE-bench）、accuracy（evalscope 精度测试），并支持任意组合混合运行。
 
 ### 模式三：Accuracy 精度测试
 
@@ -393,6 +398,45 @@ evalscope eval \
   --generation-config '{"temperature":1.0,"top_p":0.95,"max_tokens":130000,"timeout":900,"retries":2}' \
   --dataset-args '{"gpqa_diamond":{"filters":{"remove_until":"</think>"}}}'
 ```
+
+### 模式四：混合运行
+
+`mode` 支持一个、两个或三个模式的任意组合，并按给定顺序执行。
+
+配置文件写法：
+
+```jsonc
+"mode": ["agent", "performance", "accuracy"]
+```
+
+等价字符串写法：
+
+```jsonc
+"mode": "agent,performance,accuracy"
+```
+
+命令行写法：
+
+```shell
+# 空格分隔
+python3 run_perf.py --mode agent performance accuracy
+
+# 逗号分隔
+python3 run_perf.py --mode agent,performance,accuracy
+
+# 重复 --mode
+python3 run_perf.py --mode accuracy --mode agent
+```
+
+混合运行时会自动切换配置节点：
+
+```text
+agent       -> agent 节点
+performance -> performance 节点
+accuracy    -> accuracy 节点
+```
+
+同一模式会自动去重，不会重复执行。
 
 ### 模式一：JSON 用例驱动（推荐）
 
@@ -470,7 +514,7 @@ python3 run_perf.py -i 32768 -c 1 8 16 --skip-run
 
 | 参数 | 说明 |
 |------|------|
-| `--mode` | 运行模式：performance / agent / accuracy |
+| `--mode` | 单个或混合模式：performance / agent / accuracy；支持空格、逗号和重复传参 |
 | `--cases` | JSON 用例文件路径（performance 模式） |
 | `-i / --input-len` | 输入长度列表（简易模式） |
 | `-c / --concurrency` | 并发数列表（简易模式） |

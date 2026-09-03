@@ -194,6 +194,37 @@ def _strip_jsonc_comments(text):
 
 
 _CFG_TOP_LEVEL_KEYS = {"mode", "agent", "accuracy", "performance"}
+_SUPPORTED_MODES = ("performance", "agent", "accuracy")
+
+
+def _parse_mode_list(value, source="mode"):
+    """解析运行模式，支持字符串、逗号分隔、空白分隔和数组。"""
+    if isinstance(value, str):
+        raw_values = [value]
+    elif isinstance(value, (list, tuple)):
+        raw_values = list(value)
+    else:
+        raise RuntimeError("{} 仅支持字符串或数组，当前类型: {}".format(source, type(value).__name__))
+
+    modes = []
+    for item in raw_values:
+        if not isinstance(item, str):
+            raise RuntimeError("{} 里的模式必须是字符串，当前类型: {}".format(source, type(item).__name__))
+        for mode in re.split(r"[,\s]+", item.strip()):
+            if not mode:
+                continue
+            if mode not in _SUPPORTED_MODES:
+                raise RuntimeError(
+                    "{} 仅支持 {} 的任意组合，当前: {}".format(
+                        source, " / ".join(_SUPPORTED_MODES), mode
+                    )
+                )
+            if mode not in modes:
+                modes.append(mode)
+
+    if not modes:
+        raise RuntimeError("{} 不能为空".format(source))
+    return modes
 
 
 def _load_cfg():
@@ -213,9 +244,7 @@ def _load_cfg():
             )
         )
 
-    mode = cfg.get("mode", "performance")
-    if mode not in ("performance", "agent", "accuracy"):
-        raise RuntimeError("run_perf.cfg mode 仅支持 performance / agent / accuracy，当前: {}".format(mode))
+    cfg["mode"] = _parse_mode_list(cfg.get("mode", "performance"), "run_perf.cfg mode")
     for section in ("agent", "accuracy", "performance"):
         if section in cfg and not isinstance(cfg[section], dict):
             raise RuntimeError("run_perf.cfg 里 {} 必须是对象".format(section))
@@ -225,7 +254,8 @@ def _load_cfg():
 
 _cfg = _load_cfg()
 
-RUN_MODE = _cfg.get("mode", "performance")
+RUN_MODES = _parse_mode_list(_cfg.get("mode", ["performance"]), "run_perf.cfg mode")
+RUN_MODE = RUN_MODES[0]
 _AGENT_CFG = _cfg.get("agent", {})
 _PERFORMANCE_CFG = _cfg.get("performance", {})
 _ACCURACY_CFG = _cfg.get("accuracy", {})
@@ -301,14 +331,30 @@ def _benchmark_cfg_for_mode(mode):
     }
 
 
-# 按当前模式选择模型配置
-MODEL_CFG_PARAMS = dict(_model_cfg_for_mode(RUN_MODE))
+def _set_active_mode(mode):
+    """切换当前运行模式，并加载该模式专属的模型和 benchmark 配置。"""
+    global RUN_MODE, MODEL_CFG_PARAMS
+    global BENCHMARK_REPO, BENCHMARK_REF, INSTALL_REQUIREMENTS, BENCHMARK_DIR
 
-# Benchmark 环境配置：agent 模式读 agent 节，performance 模式读 performance 节
-_BENCHMARK_CFG = _benchmark_cfg_for_mode(RUN_MODE)
-BENCHMARK_REPO = _BENCHMARK_CFG.get("benchmark_repo", "")
-BENCHMARK_REF = _BENCHMARK_CFG.get("benchmark_ref", "")
-INSTALL_REQUIREMENTS = bool(_BENCHMARK_CFG.get("install_requirements", True))
+    if mode not in _SUPPORTED_MODES:
+        raise RuntimeError("不支持的运行模式: {}".format(mode))
+    RUN_MODE = mode
+    MODEL_CFG_PARAMS = dict(_model_cfg_for_mode(mode))
+
+    benchmark_cfg = _benchmark_cfg_for_mode(mode)
+    BENCHMARK_REPO = benchmark_cfg.get("benchmark_repo", "")
+    BENCHMARK_REF = benchmark_cfg.get("benchmark_ref", "")
+    INSTALL_REQUIREMENTS = bool(benchmark_cfg.get("install_requirements", True))
+    benchmark_dir_cfg = benchmark_cfg.get("benchmark_dir", "")
+    BENCHMARK_DIR = (
+        os.path.abspath(benchmark_dir_cfg)
+        if os.path.isabs(benchmark_dir_cfg)
+        else os.path.join(SCRIPT_DIR, benchmark_dir_cfg)
+    ) if benchmark_dir_cfg else os.path.join(SCRIPT_DIR, "benchmark")
+
+
+# 按当前模式选择模型配置
+_set_active_mode(RUN_MODE)
 
 # Performance 数据集配置
 DATASET_TYPES = _PERFORMANCE_CFG.get("dataset_types", ["sharegpt"])
@@ -319,14 +365,6 @@ RAW_DATASET_DIR = os.path.join(
 GSM8K_URL = _PERFORMANCE_CFG.get("gsm8k_url", "")
 SHAREGPT_URL = _PERFORMANCE_CFG.get("sharegpt_url", "")
 SWEBENCH_URL = _PERFORMANCE_CFG.get("swebench_url", "")
-
-_BENCHMARK_DIR_CFG = _BENCHMARK_CFG.get("benchmark_dir", "")
-BENCHMARK_DIR = (
-    os.path.abspath(_BENCHMARK_DIR_CFG)
-    if os.path.isabs(_BENCHMARK_DIR_CFG)
-    else os.path.join(SCRIPT_DIR, _BENCHMARK_DIR_CFG)
-) if _BENCHMARK_DIR_CFG else os.path.join(SCRIPT_DIR, "benchmark")
-
 
 def _resolve_raw_path(value, default_name):
     if value:
@@ -1495,104 +1533,14 @@ def run_case(case, skip_run=False):
     return result
 
 
-def main():
-    ap = argparse.ArgumentParser(description="xllm 自动测试入口：性能 / Agent / 精度")
-    ap.add_argument("--cases", help="performance 模式: JSON 用例文件路径")
-    ap.add_argument("--mode", choices=["performance", "agent", "accuracy"], default=None,
-                    help="运行模式: performance=拼接压测数据集, agent=原生 SWE-bench, accuracy=evalscope 精度测试")
-    ap.add_argument("--agent-dataset", choices=sorted(_AGENT_DATASET_HF_ID), default=None,
-                    help="agent 模式: SWE-bench 数据集类型")
-    ap.add_argument("--agent-count", type=int, default=None,
-                    help="agent 模式: 取前 N 条; 0 表示全部")
-    ap.add_argument("--agent-run-mode", choices=["infer", "eval", "all"], default=None,
-                    help="agent 模式: infer=只推理, eval=只评测, all=推理+评测")
-    ap.add_argument("--accuracy-dataset", default=None,
-                    help="accuracy 模式: evalscope 数据集，默认 accuracy.dataset")
-    ap.add_argument("--accuracy-batch-size", type=int, default=None,
-                    help="accuracy 模式: eval-batch-size，默认 accuracy.eval_batch_size")
-    ap.add_argument("--accuracy-work-dir", default=None,
-                    help="accuracy 模式: 输出目录，默认 accuracy.work_dir")
-    # 简易模式 (向后兼容)
-    ap.add_argument("-i", "--input-len", type=int, nargs="+", default=None,
-                    help="简易模式: 输入长度列表")
-    ap.add_argument("-c", "--concurrency", type=int, nargs="+", default=None,
-                    help="简易模式: 并发数列表 (batch_size)")
-    ap.add_argument("--max-out-len", type=int, default=DEFAULT_MAX_OUT_LEN,
-                    help="简易模式: 输出长度")
-    ap.add_argument("--request-rate", type=float, default=DEFAULT_REQUEST_RATE,
-                    help="简易模式: request_rate (0=尽量打满)")
-    ap.add_argument("--pfx", type=int, nargs="+", default=[DEFAULT_PFX],
-                    help="简易模式: 前缀缓存重复率%% 列表 (可多个); 0 或不传=普通数据集")
-    ap.add_argument("--dataset-type", dest="dataset_type", nargs="+", default=None,
-                    choices=["gsm", "sharegpt", "swebench"],
-                    help="简易模式: 数据集类型列表 (gsm/sharegpt/swebench), 默认用脚本顶部 DATASET_TYPES")
-    # 模型配置覆盖
-    ap.add_argument("--path", dest="path", default=None, help="模型权重路径")
-    ap.add_argument("--model", dest="model", default=None, help="模型名")
-    ap.add_argument("--host-ip", dest="host_ip", default=None, help="服务 IP")
-    ap.add_argument("--host-port", dest="host_port", type=int, default=None, help="服务端口")
-    ap.add_argument("--api-key", dest="api_key", default=None, help="accuracy 模式 OpenAI API Key")
-    ap.add_argument("--excel", default=None, help="Excel 输出路径 (默认当前文件夹下)")
-    ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
-    args = ap.parse_args()
-
-    global EXCEL_PATH, MODEL_CFG_PARAMS, RUN_MODE
-    global AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
-    global ACCURACY_DATASET, ACCURACY_EVAL_BATCH_SIZE, ACCURACY_WORK_DIR
-    global BENCHMARK_REPO, BENCHMARK_REF, INSTALL_REQUIREMENTS, BENCHMARK_DIR
-    if args.mode:
-        RUN_MODE = args.mode
-        MODEL_CFG_PARAMS = dict(_model_cfg_for_mode(RUN_MODE))
-        benchmark_cfg = _benchmark_cfg_for_mode(RUN_MODE)
-        BENCHMARK_REPO = benchmark_cfg.get("benchmark_repo", "")
-        BENCHMARK_REF = benchmark_cfg.get("benchmark_ref", "")
-        INSTALL_REQUIREMENTS = bool(benchmark_cfg.get("install_requirements", True))
-        benchmark_dir_cfg = benchmark_cfg.get("benchmark_dir", "")
-        BENCHMARK_DIR = (
-            os.path.abspath(benchmark_dir_cfg)
-            if os.path.isabs(benchmark_dir_cfg)
-            else os.path.join(SCRIPT_DIR, benchmark_dir_cfg)
-        ) if benchmark_dir_cfg else os.path.join(SCRIPT_DIR, "benchmark")
-    if args.agent_dataset:
-        AGENT_DATASET = args.agent_dataset
-    if args.agent_count is not None:
-        AGENT_COUNT = args.agent_count
-    if args.agent_run_mode:
-        AGENT_RUN_MODE = args.agent_run_mode
-    if args.accuracy_dataset:
-        ACCURACY_DATASET = args.accuracy_dataset
-    if args.accuracy_batch_size is not None:
-        ACCURACY_EVAL_BATCH_SIZE = args.accuracy_batch_size
-    if args.accuracy_work_dir:
-        ACCURACY_WORK_DIR = args.accuracy_work_dir
-
-    if RUN_MODE == "agent":
-        run_agent_mode()
-        return
-    if RUN_MODE == "accuracy":
-        if args.model:
-            MODEL_CFG_PARAMS["model"] = args.model
-        if args.host_ip:
-            MODEL_CFG_PARAMS["host_ip"] = args.host_ip
-        if args.host_port is not None:
-            MODEL_CFG_PARAMS["host_port"] = args.host_port
-        if args.api_key:
-            MODEL_CFG_PARAMS["api_key"] = args.api_key
-        run_accuracy_mode()
-        return
+def run_performance_mode(args):
+    """执行 performance 模式：拼接压测数据集 + ais_bench。"""
+    global EXCEL_PATH
 
     _init_performance_runtime()
     os.makedirs(PERFORMANCE_RESULT_DIR, exist_ok=True)
     if args.excel:
         EXCEL_PATH = args.excel
-    # 命令行模型配置覆盖脚本默认
-    MODEL_CFG_PARAMS = dict(MODEL_CFG_PARAMS)
-    MODEL_CFG_PARAMS.update({
-        "path":        args.path or MODEL_CFG_PARAMS.get("path"),
-        "model":       args.model or MODEL_CFG_PARAMS.get("model"),
-        "host_ip":     args.host_ip or MODEL_CFG_PARAMS.get("host_ip"),
-        "host_port":   args.host_port if args.host_port is not None else MODEL_CFG_PARAMS.get("host_port"),
-    })
 
     print("数据集目录 = {}".format(DATASET_DIR))
     print("执行目录(cwd) = {}".format(RUN_CWD))
@@ -1633,7 +1581,7 @@ def main():
                         })
                         seq += 1
 
-    # ---- v1.0.3: 自动准备本次用到的原始数据集 ----
+    # ---- 自动准备本次用到的原始数据集 ----
     active_dataset_types = sorted({case.get("dataset_type", "sharegpt") for case in cases})
     print("performance 自动准备 = {}".format("开启" if PERFORMANCE_AUTO_PREPARE else "关闭"))
     prepare_raw_datasets(active_dataset_types)
@@ -1665,16 +1613,116 @@ def main():
     print("{:<40} {:>8} {:>8} {:>10} {:>10} {:>8}".format(
         "用例", "并发", "rate", "E2EL", "总吞吐", "状态"))
     for r in results:
-        s = r["summary"] or {}
+        summary = r["summary"] or {}
         print("{:<40} {:>8} {:>8} {:>10} {:>10} {:>8}".format(
             r["case_name"][:40],
             str(r["concurrency"]),
             str(r["request_rate"]),
-            str(s.get("平均E2EL(ms)", "-")),
-            str(s.get("总吞吐(token/s)", "-")),
+            str(summary.get("平均E2EL(ms)", "-")),
+            str(summary.get("总吞吐(token/s)", "-")),
             r["status"],
         ))
 
+
+def _apply_mode_overrides(args, mode):
+    """把通用命令行模型参数覆盖到当前模式自己的模型配置上。"""
+    global MODEL_CFG_PARAMS
+
+    MODEL_CFG_PARAMS = dict(MODEL_CFG_PARAMS)
+    if args.model:
+        MODEL_CFG_PARAMS["model"] = args.model
+    if args.host_ip:
+        MODEL_CFG_PARAMS["host_ip"] = args.host_ip
+    if args.host_port is not None:
+        MODEL_CFG_PARAMS["host_port"] = args.host_port
+    if args.api_key and mode in ("agent", "accuracy"):
+        MODEL_CFG_PARAMS["api_key"] = args.api_key
+    if args.path and mode == "performance":
+        MODEL_CFG_PARAMS["path"] = args.path
+
+
+def main():
+    ap = argparse.ArgumentParser(description="xllm 自动测试入口：性能 / Agent / 精度")
+    ap.add_argument("--cases", help="performance 模式: JSON 用例文件路径")
+    ap.add_argument(
+        "--mode",
+        nargs="+",
+        action="extend",
+        default=None,
+        help=(
+            "运行模式，支持 performance / agent / accuracy 任意组合；"
+            "可写 --mode agent performance，也可写 --mode agent,performance"
+        ),
+    )
+    ap.add_argument("--agent-dataset", choices=sorted(_AGENT_DATASET_HF_ID), default=None,
+                    help="agent 模式: SWE-bench 数据集类型")
+    ap.add_argument("--agent-count", type=int, default=None,
+                    help="agent 模式: 取前 N 条; 0 表示全部")
+    ap.add_argument("--agent-run-mode", choices=["infer", "eval", "all"], default=None,
+                    help="agent 模式: infer=只推理, eval=只评测, all=推理+评测")
+    ap.add_argument("--accuracy-dataset", default=None,
+                    help="accuracy 模式: evalscope 数据集，默认 accuracy.dataset")
+    ap.add_argument("--accuracy-batch-size", type=int, default=None,
+                    help="accuracy 模式: eval-batch-size，默认 accuracy.eval_batch_size")
+    ap.add_argument("--accuracy-work-dir", default=None,
+                    help="accuracy 模式: 输出目录，默认 accuracy.work_dir")
+    # 简易模式 (向后兼容)
+    ap.add_argument("-i", "--input-len", type=int, nargs="+", default=None,
+                    help="简易模式: 输入长度列表")
+    ap.add_argument("-c", "--concurrency", type=int, nargs="+", default=None,
+                    help="简易模式: 并发数列表 (batch_size)")
+    ap.add_argument("--max-out-len", type=int, default=DEFAULT_MAX_OUT_LEN,
+                    help="简易模式: 输出长度")
+    ap.add_argument("--request-rate", type=float, default=DEFAULT_REQUEST_RATE,
+                    help="简易模式: request_rate (0=尽量打满)")
+    ap.add_argument("--pfx", type=int, nargs="+", default=[DEFAULT_PFX],
+                    help="简易模式: 前缀缓存重复率%% 列表 (可多个); 0 或不传=普通数据集")
+    ap.add_argument("--dataset-type", dest="dataset_type", nargs="+", default=None,
+                    choices=["gsm", "sharegpt", "swebench"],
+                    help="简易模式: 数据集类型列表 (gsm/sharegpt/swebench), 默认用脚本顶部 DATASET_TYPES")
+    # 模型配置覆盖
+    ap.add_argument("--path", dest="path", default=None, help="模型权重路径")
+    ap.add_argument("--model", dest="model", default=None, help="模型名")
+    ap.add_argument("--host-ip", dest="host_ip", default=None, help="服务 IP")
+    ap.add_argument("--host-port", dest="host_port", type=int, default=None, help="服务端口")
+    ap.add_argument("--api-key", dest="api_key", default=None, help="agent / accuracy 模式 OpenAI API Key")
+    ap.add_argument("--excel", default=None, help="Excel 输出路径 (默认当前文件夹下)")
+    ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
+    args = ap.parse_args()
+
+    global RUN_MODE, RUN_MODES
+    global AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
+    global ACCURACY_DATASET, ACCURACY_EVAL_BATCH_SIZE, ACCURACY_WORK_DIR
+
+    if args.agent_dataset:
+        AGENT_DATASET = args.agent_dataset
+    if args.agent_count is not None:
+        AGENT_COUNT = args.agent_count
+    if args.agent_run_mode:
+        AGENT_RUN_MODE = args.agent_run_mode
+    if args.accuracy_dataset:
+        ACCURACY_DATASET = args.accuracy_dataset
+    if args.accuracy_batch_size is not None:
+        ACCURACY_EVAL_BATCH_SIZE = args.accuracy_batch_size
+    if args.accuracy_work_dir:
+        ACCURACY_WORK_DIR = args.accuracy_work_dir
+
+    cli_modes = _parse_mode_list(args.mode, "命令行 --mode") if args.mode else []
+    run_modes = cli_modes or RUN_MODES
+    print("运行模式 = {}（按顺序执行）".format(" -> ".join(run_modes)))
+
+    for mode in run_modes:
+        print("\n========== 混合运行切换: {} ==========".format(mode))
+        _set_active_mode(mode)
+        _apply_mode_overrides(args, mode)
+        if mode == "agent":
+            run_agent_mode()
+        elif mode == "accuracy":
+            run_accuracy_mode()
+        elif mode == "performance":
+            run_performance_mode(args)
+        else:
+            raise RuntimeError("不支持的运行模式: {}".format(mode))
 
 if __name__ == "__main__":
     main()
