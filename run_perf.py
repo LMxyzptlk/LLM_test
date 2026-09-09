@@ -4,8 +4,11 @@
 ais_bench 自动性能测试脚本 (JSON 用例驱动)
 
 用法:
-    # performance 模式: 用 JSON 用例文件驱动, 支持多数据集类型/输入长度/输出长度/并发/request_rate/pfx 组合
-    python3 run_perf.py --cases cases.json
+    # performance-c 拼接压测模式: 用 JSON 用例文件驱动
+    python3 run_perf.py --mode performance-c --cases cases.json
+
+    # performance-n 原生 ShareGPT 多轮压测模式
+    python3 run_perf.py --mode performance-n
 
     # agent 模式: 跑原生 SWE-bench, 支持 lite / verified / full / multilingual
     python3 run_perf.py --mode agent --agent-dataset lite --agent-count 10
@@ -13,10 +16,10 @@ ais_bench 自动性能测试脚本 (JSON 用例驱动)
     # accuracy 模式: 跑 evalscope 精度测试, 当前默认 GPQA Diamond
     python3 run_perf.py --mode accuracy
 
-    # performance 简易模式: 直接命令行指定 (向后兼容)
-    python3 run_perf.py -i 32768 -c 1 8 16 --max-out-len 1024 --request-rate 0.5
-    python3 run_perf.py -i 32768 -c 1 8 16 --dataset-type gsm sharegpt  # 多数据集类型
-    python3 run_perf.py -i 32768 -c 1 8 16 --skip-run       # 只解析已有输出
+    # performance-c 简易模式
+    python3 run_perf.py --mode performance-c -i 32768 -c 1 8 16 --max-out-len 1024 --request-rate 0.5
+    python3 run_perf.py --mode performance-c -i 32768 -c 1 8 16 --dataset-type gsm sharegpt
+    python3 run_perf.py --mode performance-c -i 32768 -c 1 8 16 --skip-run
 
 JSON 用例文件格式 (序号->用例串 映射):
     {
@@ -62,96 +65,16 @@ import zipfile
 
 
 # ============================================================
-#  配置文件加载 (run_perf.cfg)
-#  所有可修改的参数放在同目录下的 run_perf.cfg 中，不再改脚本本身。
+#  配置文件加载（cfg-normal.cfg + 各模式 cfg）
+#  公共参数放在 cfg-normal.cfg，各模式专属参数放在自己的 cfg 文件里。
 # ============================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CFG_PATH = os.path.join(SCRIPT_DIR, "run_perf.cfg")
+CFG_NORMAL_PATH = os.path.join(SCRIPT_DIR, "cfg-normal.cfg")
+AGENT_CFG_PATH = os.path.join(SCRIPT_DIR, "agent.cfg")
+ACCURACY_CFG_PATH = os.path.join(SCRIPT_DIR, "accuracy.cfg")
+PERFORMANCE_C_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-c.cfg")
+PERFORMANCE_N_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-n.cfg")
 SETUP_SWEBENCH_SCRIPT = os.path.join(SCRIPT_DIR, "setup_swebench.sh")
-
-_DEFAULT_CFG = {
-    "mode": "performance",
-    "agent": {
-        "dataset": "lite",
-        "count": 1,
-        "step_limit": 200,
-        "work_dir": "outputs/agent",
-        "run_mode": "all",
-        "model_cfg_params": {},
-        "auto_prepare": True,
-        "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
-        "benchmark_dir": "",
-        "benchmark_ref": "",
-        "install_requirements": True,
-    },
-    "accuracy": {
-        "dataset": "gpqa_diamond",
-        "eval_batch_size": 8,
-        "work_dir": "outputs/accuracy",
-        "auto_prepare": True,
-        "model_cfg_params": {},
-        "generation_config": {
-            "temperature": 1.0,
-            "top_p": 0.95,
-            "max_tokens": 130000,
-            "timeout": 900,
-            "retries": 2,
-        },
-        "dataset_args": {
-            "gpqa_diamond": {
-                "filters": {
-                    "remove_until": "</think>"
-                }
-            }
-        },
-    },
-    "performance": {
-        # Performance 公共配置
-        "kind": "concat",
-        "model_cfg_params": {},
-        "auto_prepare": True,
-        "benchmark_repo": "https://gh-proxy.com/https://github.com/AISBench/benchmark.git",
-        "benchmark_dir": "",
-        "benchmark_ref": "",
-        "install_requirements": True,
-        "raw_dataset_dir": "raw_datasets",
-        "gsm8k_url": "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/data/gsm8k.zip",
-        "sharegpt_url": "https://hf-mirror.com/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json",
-        "swebench_url": "https://hf-mirror.com/datasets/princeton-nlp/SWE-bench/resolve/main/data/test-00000-of-00001.parquet",
-
-        # concat 拼接压测专属配置
-        "concat": {
-            "dataset_dir": "datasets/performance",
-            "result_dir": "results/performance",
-            "input_len": [32768],
-            "concurrencies": [1, 8, 16],
-            "default_max_out_len": None,
-            "default_request_rate": None,
-            "default_pfx": None,
-            "dataset_types": ["sharegpt"],
-            "raw_gsm_path": "",
-            "raw_sharegpt_path": "",
-            "raw_swebench_path": "",
-        },
-
-        # native_multiturn 原生多轮专属配置
-        "native_multiturn": {
-            "conversation_count": 100,
-            "infer_mode": "every",
-            "concurrencies": [1, 8, 16],
-            "max_out_len": 512,
-            "request_rate": 0,
-            "work_dir": "outputs/performance/native_multiturn",
-            "result_dir": "results/performance/native_multiturn",
-            "raw_sharegpt_path": "",
-            "generation_kwargs": {
-                "temperature": 0.01,
-                "ignore_eos": False,
-            },
-        },
-    },
-}
-
 
 def _deep_merge(base, override):
     """递归合并嵌套配置。"""
@@ -215,8 +138,7 @@ def _strip_jsonc_comments(text):
     return "".join(out)
 
 
-_CFG_TOP_LEVEL_KEYS = {"mode", "agent", "accuracy", "performance"}
-_SUPPORTED_MODES = ("performance", "agent", "accuracy")
+_SUPPORTED_MODES = ("performance-c", "performance-n", "agent", "accuracy")
 
 
 def _parse_mode_list(value, source="mode"):
@@ -249,124 +171,75 @@ def _parse_mode_list(value, source="mode"):
     return modes
 
 
-def _load_cfg():
-    """从 run_perf.cfg 加载配置，支持 JSONC 注释。"""
-    if os.path.exists(CFG_PATH):
-        with open(CFG_PATH, "r", encoding="utf-8") as f:
-            raw = f.read()
-        cfg = json.loads(_strip_jsonc_comments(raw))
-    else:
-        cfg = {}
+def _load_jsonc_file(path):
+    """读取一个 JSONC 配置文件。"""
+    if not os.path.isfile(path):
+        raise RuntimeError("找不到配置文件: {}".format(path))
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    return json.loads(_strip_jsonc_comments(raw))
 
-    unknown_keys = sorted(set(cfg) - _CFG_TOP_LEVEL_KEYS)
+
+def _check_cfg_keys(cfg, allowed_keys, filename):
+    unknown_keys = sorted(set(cfg) - allowed_keys)
     if unknown_keys:
         raise RuntimeError(
-            "run_perf.cfg 最外层只支持 mode / agent / accuracy / performance，发现多余字段: {}".format(
-                ", ".join(unknown_keys)
-            )
+            "{} 里发现未知字段: {}".format(filename, ", ".join(unknown_keys))
         )
 
-    cfg["mode"] = _parse_mode_list(cfg.get("mode", "performance"), "run_perf.cfg mode")
-    for section in ("agent", "accuracy", "performance"):
-        if section in cfg and not isinstance(cfg[section], dict):
-            raise RuntimeError("run_perf.cfg 里 {} 必须是对象".format(section))
 
-    performance_cfg = _deep_merge(_DEFAULT_CFG["performance"], cfg.get("performance", {}))
-    allowed_performance_keys = {
-        "kind", "model_cfg_params", "auto_prepare",
+def _load_cfg():
+    """加载公共配置和各模式专属配置。"""
+    common = _load_jsonc_file(CFG_NORMAL_PATH)
+    agent = _load_jsonc_file(AGENT_CFG_PATH)
+    accuracy = _load_jsonc_file(ACCURACY_CFG_PATH)
+    performance_c = _load_jsonc_file(PERFORMANCE_C_CFG_PATH)
+    performance_n = _load_jsonc_file(PERFORMANCE_N_CFG_PATH)
+
+    allowed_common_keys = {
+        "mode", "model_cfg_params", "auto_prepare",
         "benchmark_repo", "benchmark_dir", "benchmark_ref", "install_requirements",
         "raw_dataset_dir", "gsm8k_url", "sharegpt_url", "swebench_url",
-        "concat", "native_multiturn",
     }
-    unknown_performance_keys = sorted(set(performance_cfg) - allowed_performance_keys)
-    if unknown_performance_keys:
-        raise RuntimeError(
-            "performance 下只允许公共字段、concat 和 native_multiturn，发现多余字段: {}".format(
-                ", ".join(unknown_performance_keys)
-            )
-        )
-
-    kind = performance_cfg.get("kind", "concat")
-    if kind not in ("concat", "native_multiturn"):
-        raise RuntimeError(
-            "performance.kind 仅支持 concat / native_multiturn，当前: {}".format(kind)
-        )
-
-    concat_cfg = performance_cfg.get("concat", {})
-    if not isinstance(concat_cfg, dict):
-        raise RuntimeError("performance.concat 必须是对象")
-    native_cfg = performance_cfg.get("native_multiturn", {})
-    if not isinstance(native_cfg, dict):
-        raise RuntimeError("performance.native_multiturn 必须是对象")
-
-    allowed_concat_keys = {
+    allowed_agent_keys = {
+        "dataset", "count", "step_limit", "work_dir", "run_mode",
+    }
+    allowed_accuracy_keys = {
+        "dataset", "eval_batch_size", "work_dir", "generation_config", "dataset_args",
+    }
+    allowed_performance_c_keys = {
         "dataset_dir", "result_dir", "input_len", "concurrencies",
         "default_max_out_len", "default_request_rate", "default_pfx",
         "dataset_types", "raw_gsm_path", "raw_sharegpt_path", "raw_swebench_path",
     }
-    unknown_concat_keys = sorted(set(concat_cfg) - allowed_concat_keys)
-    if unknown_concat_keys:
-        raise RuntimeError(
-            "performance.concat 里发现未知字段: {}".format(", ".join(unknown_concat_keys))
-        )
-
-    allowed_native_keys = {
+    allowed_performance_n_keys = {
         "conversation_count", "infer_mode", "concurrencies", "max_out_len",
         "request_rate", "work_dir", "result_dir", "raw_sharegpt_path",
         "generation_kwargs",
     }
-    unknown_native_keys = sorted(set(native_cfg) - allowed_native_keys)
-    if unknown_native_keys:
-        raise RuntimeError(
-            "performance.native_multiturn 里发现未知字段: {}".format(
-                ", ".join(unknown_native_keys)
-            )
-        )
 
-    for subtype, subtype_cfg in (
-        ("concat", concat_cfg),
-        ("native_multiturn", native_cfg),
-    ):
-        concurrencies = subtype_cfg.get("concurrencies", [1, 8, 16])
-        if not isinstance(concurrencies, (list, tuple)) or not concurrencies:
-            raise RuntimeError(
-                "performance.{}.concurrencies 必须是非空数组".format(subtype)
-            )
-        for concurrency in concurrencies:
-            if not isinstance(concurrency, int) or concurrency <= 0:
-                raise RuntimeError(
-                    "performance.{}.concurrencies 里的并发必须是正整数".format(subtype)
-                )
+    _check_cfg_keys(common, allowed_common_keys, "cfg-normal.cfg")
+    _check_cfg_keys(agent, allowed_agent_keys, "agent.cfg")
+    _check_cfg_keys(accuracy, allowed_accuracy_keys, "accuracy.cfg")
+    _check_cfg_keys(performance_c, allowed_performance_c_keys, "performance-c.cfg")
+    _check_cfg_keys(performance_n, allowed_performance_n_keys, "performance-n.cfg")
 
-    generation_kwargs = native_cfg.get("generation_kwargs", {})
-    if not isinstance(generation_kwargs, dict):
-        raise RuntimeError("performance.native_multiturn.generation_kwargs 必须是对象")
-    infer_mode = native_cfg.get("infer_mode", "every")
-    if infer_mode not in ("every", "last", "every_with_gt"):
-        raise RuntimeError(
-            "performance.native_multiturn.infer_mode 仅支持 every / last / every_with_gt，当前: {}".format(infer_mode)
-        )
-    try:
-        conversation_count = int(native_cfg.get("conversation_count", 100))
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("performance.native_multiturn.conversation_count 必须是整数")
-    if conversation_count < 0:
-        raise RuntimeError("performance.native_multiturn.conversation_count 不能小于 0")
-    for field in ("max_out_len", "request_rate"):
-        if native_cfg.get(field) is not None:
-            try:
-                float(native_cfg[field])
-            except (TypeError, ValueError):
-                raise RuntimeError(
-                    "performance.native_multiturn.{} 必须是数字".format(field)
-                )
+    common_without_mode = {k: v for k, v in common.items() if k != "mode"}
+    performance = dict(common_without_mode)
+    performance["concat"] = performance_c
+    performance["native_multiturn"] = performance_n
 
-    return _deep_merge(_DEFAULT_CFG, cfg)
+    return {
+        "mode": common.get("mode", "performance-c"),
+        "agent": _deep_merge(common_without_mode, agent),
+        "accuracy": _deep_merge(common_without_mode, accuracy),
+        "performance": performance,
+    }
 
 
 _cfg = _load_cfg()
 
-RUN_MODES = _parse_mode_list(_cfg.get("mode", ["performance"]), "run_perf.cfg mode")
+RUN_MODES = _parse_mode_list(_cfg.get("mode", ["performance-c"]), "cfg-normal.cfg mode")
 RUN_MODE = RUN_MODES[0]
 _AGENT_CFG = _cfg.get("agent", {})
 _PERFORMANCE_CFG = _cfg.get("performance", {})
@@ -383,7 +256,6 @@ _AGENT_MODEL_CFG_PARAMS = dict(_AGENT_CFG.get("model_cfg_params", {}))
 
 # Performance 公共配置
 PERFORMANCE_AUTO_PREPARE = bool(_PERFORMANCE_CFG.get("auto_prepare", True))
-PERFORMANCE_KIND = _PERFORMANCE_CFG.get("kind", "concat")
 _PERFORMANCE_MODEL_CFG_PARAMS = dict(_PERFORMANCE_CFG.get("model_cfg_params", {}))
 
 # Performance concat 专属配置
@@ -451,7 +323,8 @@ def _model_cfg_for_mode(mode):
     return {
         "agent": _AGENT_MODEL_CFG_PARAMS,
         "accuracy": _ACCURACY_MODEL_CFG_PARAMS,
-        "performance": _PERFORMANCE_MODEL_CFG_PARAMS,
+        "performance-c": _PERFORMANCE_MODEL_CFG_PARAMS,
+        "performance-n": _PERFORMANCE_MODEL_CFG_PARAMS,
     }.get(mode, _PERFORMANCE_MODEL_CFG_PARAMS)
 
 
@@ -459,7 +332,7 @@ def _benchmark_cfg_for_mode(mode):
     """按模式返回 benchmark 配置；accuracy 模式不需要 ais_bench。"""
     if mode == "agent":
         return _AGENT_CFG
-    if mode == "performance":
+    if mode in ("performance-c", "performance-n"):
         return _PERFORMANCE_CFG
     return {
         "benchmark_repo": "",
@@ -1751,7 +1624,7 @@ def _build_native_multiturn_config(concurrency, out_len, request_rate, dataset_p
     host_port = MODEL_CFG_PARAMS.get("host_port", "")
     if not model_path or not model_name or not host_ip or not host_port:
         raise RuntimeError(
-            "native_multiturn 需要在 performance.model_cfg_params 里配置 path / model / host_ip / host_port"
+            "performance-n 需要在 cfg-normal.cfg 的 model_cfg_params 里配置 path / model / host_ip / host_port"
         )
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -1856,7 +1729,7 @@ work_dir = {work_dir!r}
 def run_native_multiturn_mode(args):
     """执行 AISBench 原生 ShareGPT 多轮对话性能测试。"""
     if args.cases:
-        raise RuntimeError("performance.kind=native_multiturn 不支持 --cases，请使用简易模式参数")
+        raise RuntimeError("performance-n 模式不支持 --cases，请使用简易模式参数")
 
     concurrencies = args.concurrency if args.concurrency else NATIVE_CONCURRENCIES
     if args.skip_run and len(concurrencies) != 1:
@@ -1971,7 +1844,7 @@ def run_performance_mode(args):
     """执行 performance 模式：concat 拼接压测或 native_multiturn 原生多轮压测。"""
     global EXCEL_PATH
 
-    if PERFORMANCE_KIND == "native_multiturn":
+    if RUN_MODE == "performance-n":
         run_native_multiturn_mode(args)
         return
 
@@ -2078,9 +1951,9 @@ def _apply_mode_overrides(args, mode):
         MODEL_CFG_PARAMS["host_ip"] = args.host_ip
     if args.host_port is not None:
         MODEL_CFG_PARAMS["host_port"] = args.host_port
-    if args.api_key and (mode in ("agent", "accuracy") or (mode == "performance" and PERFORMANCE_KIND == "native_multiturn")):
+    if args.api_key and mode in ("agent", "accuracy", "performance-n"):
         MODEL_CFG_PARAMS["api_key"] = args.api_key
-    if args.path and mode == "performance":
+    if args.path and mode in ("performance-c", "performance-n"):
         MODEL_CFG_PARAMS["path"] = args.path
 
 
@@ -2093,8 +1966,8 @@ def main():
         action="extend",
         default=None,
         help=(
-            "运行模式，支持 performance / agent / accuracy 任意组合；"
-            "可写 --mode agent performance，也可写 --mode agent,performance"
+            "运行模式，支持 performance-c / performance-n / agent / accuracy 任意组合；"
+            "可写 --mode agent performance-c，也可写 --mode agent,performance-c"
         ),
     )
     ap.add_argument("--agent-dataset", choices=sorted(_AGENT_DATASET_HF_ID), default=None,
@@ -2109,8 +1982,6 @@ def main():
                     help="accuracy 模式: eval-batch-size，默认 accuracy.eval_batch_size")
     ap.add_argument("--accuracy-work-dir", default=None,
                     help="accuracy 模式: 输出目录，默认 accuracy.work_dir")
-    ap.add_argument("--performance-kind", choices=["concat", "native_multiturn"], default=None,
-                    help="performance 模式: concat=拼接压测, native_multiturn=AISBench 原生 ShareGPT 多轮")
     ap.add_argument("--native-conversation-count", type=int, default=None,
                     help="native_multiturn: 取前 N 组有效多轮对话; 0=全部")
     ap.add_argument("--native-infer-mode", choices=["every", "last", "every_with_gt"], default=None,
@@ -2148,11 +2019,9 @@ def main():
     global RUN_MODE, RUN_MODES
     global AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
     global ACCURACY_DATASET, ACCURACY_EVAL_BATCH_SIZE, ACCURACY_WORK_DIR
-    global PERFORMANCE_KIND, NATIVE_CONVERSATION_COUNT, NATIVE_INFER_MODE
+    global NATIVE_CONVERSATION_COUNT, NATIVE_INFER_MODE
     global NATIVE_WORK_DIR, NATIVE_RESULT_DIR, NATIVE_RAW_SHAREGPT_PATH
 
-    if args.performance_kind:
-        PERFORMANCE_KIND = args.performance_kind
     if args.native_conversation_count is not None:
         NATIVE_CONVERSATION_COUNT = args.native_conversation_count
     if args.native_infer_mode:
@@ -2167,8 +2036,6 @@ def main():
         )
     if args.native_raw_sharegpt_path:
         NATIVE_RAW_SHAREGPT_PATH = args.native_raw_sharegpt_path
-    if PERFORMANCE_KIND not in ("concat", "native_multiturn"):
-        raise RuntimeError("performance.kind 仅支持 concat / native_multiturn")
     if NATIVE_CONVERSATION_COUNT < 0:
         raise RuntimeError("native conversation_count 不能小于 0")
 
@@ -2197,7 +2064,7 @@ def main():
             run_agent_mode()
         elif mode == "accuracy":
             run_accuracy_mode()
-        elif mode == "performance":
+        elif mode in ("performance-c", "performance-n"):
             run_performance_mode(args)
         else:
             raise RuntimeError("不支持的运行模式: {}".format(mode))

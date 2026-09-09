@@ -3,7 +3,7 @@
 """
 gen_datasets.py — 提前批量生成压测数据集
 
-读取 run_perf.cfg，按 dataset_types × input_len × concurrencies × pfx 笛卡尔积
+读取 cfg-normal.cfg 和 performance-c.cfg，按 dataset_types × input_len × concurrencies × pfx 笛卡尔积
 调用 process_dataset.py 生成数据集到脚本所在目录。跑 run_perf.py 时直接复用。
 
 用法:
@@ -18,7 +18,8 @@ import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CFG_PATH = os.path.join(SCRIPT_DIR, "run_perf.cfg")
+CFG_NORMAL_PATH = os.path.join(SCRIPT_DIR, "cfg-normal.cfg")
+PERFORMANCE_C_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-c.cfg")
 PROCESS_DATASET = os.path.join(SCRIPT_DIR, "process_dataset.py")
 
 # 数据集类型 → (文件前缀, 原始路径配置key, process_dataset --datasettype 值)
@@ -30,8 +31,11 @@ _DATASET_INFO = {
 
 
 def load_cfg():
-    with open(CFG_PATH, "r", encoding="utf-8") as f:
-        return json5.load(f)
+    with open(CFG_NORMAL_PATH, "r", encoding="utf-8") as f:
+        common = json5.load(f)
+    with open(PERFORMANCE_C_CFG_PATH, "r", encoding="utf-8") as f:
+        performance_c = json5.load(f)
+    return common, performance_c
 
 
 def dataset_filename(dt, input_len, bs, pfx=None):
@@ -46,9 +50,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不实际生成")
     args = ap.parse_args()
 
-    cfg = load_cfg()
-    perf_cfg = cfg.get("performance", {})
-    concat_cfg = perf_cfg.get("concat", {})
+    common, concat_cfg = load_cfg()
     dataset_dir = os.path.join(
         SCRIPT_DIR,
         concat_cfg.get("dataset_dir", "datasets/performance"),
@@ -58,10 +60,10 @@ def main():
     input_lens = concat_cfg.get("input_len", [32768])
     concurrencies = concat_cfg.get("concurrencies", [1, 8, 16])
     pfx_list = [p for p in ([concat_cfg.get("default_pfx")] if concat_cfg.get("default_pfx") else [None])]
-    model_path = perf_cfg.get("model_cfg_params", {}).get("path", "")
+    model_path = common.get("model_cfg_params", {}).get("path", "")
 
     if not model_path:
-        print("错误: run_perf.cfg 里 performance.model_cfg_params.path 未配置")
+        print("错误: cfg-normal.cfg 里 model_cfg_params.path 未配置")
         sys.exit(1)
 
     # 展开 (dt, input_len, bs, pfx) 组合，去重并跳过已存在文件

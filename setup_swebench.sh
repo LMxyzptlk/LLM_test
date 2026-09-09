@@ -12,26 +12,26 @@ SWEBENCH_DIR="/export/home/ext.liaopeiyi1/lpy/swebench/SWE-bench-v4.1.0"
 SWEBENCH_REF="v4.1.0"
 MINISWEAGENT_REF="e55c29834f65e8d0eb1e1ce56b1fda641cba568a"
 
-# 从 run_perf.cfg 读取模型配置，保持和 run_perf.py 一致
+# 从 cfg-normal.cfg 读取公共模型配置，保持和 run_perf.py 一致
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUN_PERF_CFG="$SCRIPT_DIR/run_perf.cfg"
+CFG_NORMAL="$SCRIPT_DIR/cfg-normal.cfg"
 
-if [ ! -f "$RUN_PERF_CFG" ]; then
-    echo "ERROR: 找不到 run_perf.cfg: $RUN_PERF_CFG"
+if [ ! -f "$CFG_NORMAL" ]; then
+    echo "ERROR: 找不到 cfg-normal.cfg: $CFG_NORMAL"
     exit 1
 fi
 
-MODEL_NAME=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("agent",{}).get("model_cfg_params",{}).get("model",""))')
-HOST_IP=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("agent",{}).get("model_cfg_params",{}).get("host_ip",""))')
-HOST_PORT=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("agent",{}).get("model_cfg_params",{}).get("host_port",""))')
-API_KEY=$(python3 -c 'import json5; c=json5.load(open("run_perf.cfg",encoding="utf-8")); print(c.get("agent",{}).get("model_cfg_params",{}).get("api_key","dummy"))')
+MODEL_NAME=$(python3 -c 'import json5; c=json5.load(open("cfg-normal.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("model",""))')
+HOST_IP=$(python3 -c 'import json5; c=json5.load(open("cfg-normal.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("host_ip",""))')
+HOST_PORT=$(python3 -c 'import json5; c=json5.load(open("cfg-normal.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("host_port",""))')
+API_KEY=$(python3 -c 'import json5; c=json5.load(open("cfg-normal.cfg",encoding="utf-8")); print(c.get("model_cfg_params",{}).get("api_key","dummy"))')
 
 # 环境准备阶段不强制要求模型配置；真正需要写入模型配置时再检查
 if [ -n "$MODEL_NAME" ] && [ -n "$HOST_IP" ] && [ -n "$HOST_PORT" ]; then
     API_URL="http://${HOST_IP}:${HOST_PORT}/v1"
 else
     API_URL=""
-    echo "⚠️  run_perf.cfg 里 agent.model_cfg_params.model / host_ip / host_port 未完整配置，先跳过模型配置写入"
+    echo "⚠️  cfg-normal.cfg 里 model_cfg_params.model / host_ip / host_port 未完整配置，先跳过模型配置写入"
 fi
 
 # ============ 第 1 步:检查/安装 Docker ============
