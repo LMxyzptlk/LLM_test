@@ -327,9 +327,13 @@ if __name__ == '__main__':
     print(f"[process_dataset]: 数据集生成基于该权重产生:{model_path}")
     #不同类型的数据集分类执行，函数模块反复调用;Support Dataset Type: GSM,SHAREGPT,VQA、VID
     if ( dataset_type == 'GSM' ):
-
-        if os.path.exists(f'{dataset_type}-in{input_len}-bs{batch_size}.jsonl'):
-            print("[process_dataset]: GSM8K jsonl already exists...")
+        # GSM8K 也支持 prefix 模式；文件名与 ShareGPT/SWE-bench 保持一致。
+        if args.mode == 'prefix':
+            out_name = f'GSM8K-in{input_len}-bs{batch_size}-pfx{round(args.prefix_ratio * 100)}.jsonl'
+        else:
+            out_name = f'GSM8K-in{input_len}-bs{batch_size}.jsonl'
+        if os.path.exists(out_name):
+            print(f"[process_dataset]: {out_name} already exists...")
             exit(0)
 
         dataset = []
@@ -339,16 +343,20 @@ if __name__ == '__main__':
                 data = json.loads(line)
                 dataset.append(data['question'])
 
-        dataset_tmp = []
-        dataset_tmp = datatmp_generator(input_len, tokenizer, dataset, batch_size)
-        print("=== 生成GSM8K.jsonl文件 ===")
-        json_str = json.dumps(dataset_tmp, ensure_ascii=False, indent=4)
-        with open(f'GSM8K-in{input_len}-bs{batch_size}.jsonl', 'w', encoding='utf-8') as f:
+        if args.mode == 'prefix':
+            dataset_tmp = sharegpt_prefix_generator(
+                input_len, tokenizer, dataset, batch_size,
+                prefix_ratio=args.prefix_ratio,
+            )
+        else:
+            dataset_tmp = datatmp_generator(input_len, tokenizer, dataset, batch_size)
+        print(f"=== 生成{out_name}文件 ===")
+        with open(out_name, 'w', encoding='utf-8') as f:
             print("[process_dataset]: start generating")
             for i in range(len(dataset_tmp)):
                 f.write(json.dumps({"question": dataset_tmp[i], "answer": "none"}, ensure_ascii=False))
                 f.write("\n")
-        print(f"[process_dataset]: 已生成文件:GSM8K-in{input_len}-bs{batch_size}.jsonl")
+        print(f"[process_dataset]: 已生成文件:{out_name}")
 
 #ShareGPT数据集生成
     elif (dataset_type == 'SHAREGPT' ):
