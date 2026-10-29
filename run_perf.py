@@ -16,6 +16,9 @@ ais_bench 自动性能测试脚本 (JSON 用例驱动)
     # accuracy 模式: 跑 evalscope 精度测试, 当前默认 GPQA Diamond
     python3 run_perf.py --mode accuracy
 
+    # vlm 模式: 跑 evalscope 多模态精度测试, 当前默认 MMMU
+    python3 run_perf.py --mode vlm
+
     # performance-c 简易模式
     python3 run_perf.py --mode performance-c -i 32768 -c 1 8 16 --max-out-len 1024 --request-rate 0.5
     python3 run_perf.py --mode performance-c -i 32768 -c 1 8 16 --dataset-type gsm sharegpt
@@ -51,6 +54,7 @@ JSON 用例文件格式 (序号->用例串 映射):
 """
 
 import argparse
+import copy
 import csv
 import glob
 import json
@@ -72,6 +76,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CFG_NORMAL_PATH = os.path.join(SCRIPT_DIR, "cfg-normal.cfg")
 AGENT_CFG_PATH = os.path.join(SCRIPT_DIR, "agent.cfg")
 ACCURACY_CFG_PATH = os.path.join(SCRIPT_DIR, "accuracy.cfg")
+VLM_CFG_PATH = os.path.join(SCRIPT_DIR, "vlm.cfg")
 PERFORMANCE_C_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-c.cfg")
 PERFORMANCE_N_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-n.cfg")
 SETUP_SWEBENCH_SCRIPT = os.path.join(SCRIPT_DIR, "setup_swebench.sh")
@@ -138,7 +143,7 @@ def _strip_jsonc_comments(text):
     return "".join(out)
 
 
-_SUPPORTED_MODES = ("performance-c", "performance-n", "agent", "accuracy")
+_SUPPORTED_MODES = ("performance-c", "performance-n", "agent", "accuracy", "vlm")
 
 
 def _parse_mode_list(value, source="mode"):
@@ -193,6 +198,7 @@ def _load_cfg():
     common = _load_jsonc_file(CFG_NORMAL_PATH)
     agent = _load_jsonc_file(AGENT_CFG_PATH)
     accuracy = _load_jsonc_file(ACCURACY_CFG_PATH)
+    vlm = _load_jsonc_file(VLM_CFG_PATH)
     performance_c = _load_jsonc_file(PERFORMANCE_C_CFG_PATH)
     performance_n = _load_jsonc_file(PERFORMANCE_N_CFG_PATH)
 
@@ -206,6 +212,11 @@ def _load_cfg():
     }
     allowed_accuracy_keys = {
         "dataset", "eval_batch_size", "work_dir", "generation_config", "dataset_args",
+    }
+    allowed_vlm_keys = {
+        "dataset", "dataset_hub", "subset_list", "limit", "repeats",
+        "eval_batch_size", "work_dir", "generation_config", "dataset_args",
+        "model_cfg_params",
     }
     allowed_performance_c_keys = {
         "dataset_dir", "result_dir", "input_len", "concurrencies",
@@ -221,6 +232,7 @@ def _load_cfg():
     _check_cfg_keys(common, allowed_common_keys, "cfg-normal.cfg")
     _check_cfg_keys(agent, allowed_agent_keys, "agent.cfg")
     _check_cfg_keys(accuracy, allowed_accuracy_keys, "accuracy.cfg")
+    _check_cfg_keys(vlm, allowed_vlm_keys, "vlm.cfg")
     _check_cfg_keys(performance_c, allowed_performance_c_keys, "performance-c.cfg")
     _check_cfg_keys(performance_n, allowed_performance_n_keys, "performance-n.cfg")
 
@@ -233,6 +245,7 @@ def _load_cfg():
         "mode": common.get("mode", "performance-c"),
         "agent": _deep_merge(common_without_mode, agent),
         "accuracy": _deep_merge(common_without_mode, accuracy),
+        "vlm": _deep_merge(common_without_mode, vlm),
         "performance": performance,
     }
 
@@ -244,6 +257,7 @@ RUN_MODE = RUN_MODES[0]
 _AGENT_CFG = _cfg.get("agent", {})
 _PERFORMANCE_CFG = _cfg.get("performance", {})
 _ACCURACY_CFG = _cfg.get("accuracy", {})
+_VLM_CFG = _cfg.get("vlm", {})
 
 # Agent 模式配置
 AGENT_DATASET = _AGENT_CFG.get("dataset", "lite")
@@ -317,12 +331,69 @@ ACCURACY_DATASET_ARGS = _ACCURACY_CFG.get(
     {"gpqa_diamond": {"filters": {"remove_until": "</think>"}}},
 )
 
+# VLM 多模态精度测试配置
+VLM_DATASET = _VLM_CFG.get("dataset", "mmmu")
+VLM_DATASET_HUB = _VLM_CFG.get("dataset_hub", "modelscope")
+VLM_SUBSET_LIST = list(_VLM_CFG.get("subset_list", []) or [])
+VLM_LIMIT = _VLM_CFG.get("limit", 0)
+VLM_REPEATS = int(_VLM_CFG.get("repeats", 1))
+VLM_EVAL_BATCH_SIZE = int(_VLM_CFG.get("eval_batch_size", 4))
+VLM_WORK_DIR = _VLM_CFG.get("work_dir", "outputs/vlm")
+VLM_AUTO_PREPARE = bool(_VLM_CFG.get("auto_prepare", True))
+_VLM_MODEL_CFG_PARAMS = dict(_VLM_CFG.get("model_cfg_params", {}))
+VLM_GENERATION_CONFIG = _VLM_CFG.get(
+    "generation_config",
+    {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": 16384,
+        "timeout": 1800,
+        "retries": 2,
+    },
+)
+VLM_DATASET_ARGS = _VLM_CFG.get("dataset_args", {})
+
+# MMMU validation split 的 30 个子集，来自 evalscope MMMUAdapter.SUBSET_LIST
+MMMU_SUBSET_LIST = [
+    "Accounting",
+    "Agriculture",
+    "Architecture_and_Engineering",
+    "Art",
+    "Art_Theory",
+    "Basic_Medical_Science",
+    "Biology",
+    "Chemistry",
+    "Clinical_Medicine",
+    "Computer_Science",
+    "Design",
+    "Diagnostics_and_Laboratory_Medicine",
+    "Economics",
+    "Electronics",
+    "Energy_and_Power",
+    "Finance",
+    "Geography",
+    "History",
+    "Literature",
+    "Manage",
+    "Marketing",
+    "Materials",
+    "Math",
+    "Mechanical_Engineering",
+    "Music",
+    "Pharmacy",
+    "Physics",
+    "Psychology",
+    "Public_Health",
+    "Sociology",
+]
+
 
 def _model_cfg_for_mode(mode):
     """按模式返回对应的模型配置，避免不同模式互相混用。"""
     return {
         "agent": _AGENT_MODEL_CFG_PARAMS,
         "accuracy": _ACCURACY_MODEL_CFG_PARAMS,
+        "vlm": _VLM_MODEL_CFG_PARAMS,
         "performance-c": _PERFORMANCE_MODEL_CFG_PARAMS,
         "performance-n": _PERFORMANCE_MODEL_CFG_PARAMS,
     }.get(mode, _PERFORMANCE_MODEL_CFG_PARAMS)
@@ -771,16 +842,16 @@ def run_agent_mode():
 
 
 # -------------------- Accuracy 模式: evalscope 精度测试 --------------------
-def _ensure_accuracy_environment():
+def _ensure_evalscope_environment(auto_prepare, label="accuracy"):
     """确保 evalscope 可用；缺失时按配置自动安装。"""
     if shutil.which("evalscope"):
-        print("  [accuracy] evalscope 环境已就绪")
+        print("  [{}] evalscope 环境已就绪".format(label))
         return
 
-    if not ACCURACY_AUTO_PREPARE:
-        raise RuntimeError("evalscope 不存在，且 accuracy.auto_prepare=false")
+    if not auto_prepare:
+        raise RuntimeError("evalscope 不存在，且 {}.auto_prepare=false".format(label))
 
-    print("  [accuracy] 未找到 evalscope，开始自动安装")
+    print("  [{}] 未找到 evalscope，开始自动安装".format(label))
     _run_checked(
         [sys.executable, "-m", "pip", "install", "evalscope"],
         cwd=SCRIPT_DIR,
@@ -790,21 +861,21 @@ def _ensure_accuracy_environment():
         raise RuntimeError(
             "evalscope 安装后仍不可用。请检查 Python 环境和 PATH，或手动执行: pip install evalscope"
         )
-    print("  [accuracy] evalscope 安装完成")
+    print("  [{}] evalscope 安装完成".format(label))
 
 
-def _accuracy_json_arg(value, name):
+def _accuracy_json_arg(value, name, source="accuracy"):
     """把 dict 转成 CLI JSON 字符串；字符串则校验后原样传给 evalscope。"""
     if isinstance(value, str):
         try:
             json.loads(value)
         except Exception as exc:
-            raise RuntimeError("accuracy.{} 不是合法 JSON: {}".format(name, exc))
+            raise RuntimeError("{}.{} 不是合法 JSON: {}".format(source, name, exc))
         return value
     try:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     except Exception as exc:
-        raise RuntimeError("accuracy.{} 序列化失败: {}".format(name, exc))
+        raise RuntimeError("{}.{} 序列化失败: {}".format(source, name, exc))
 
 
 def run_accuracy_mode():
@@ -814,7 +885,7 @@ def run_accuracy_mode():
     print("eval_batch_size = {}".format(ACCURACY_EVAL_BATCH_SIZE))
     print("工作目录 = {}".format(ACCURACY_WORK_DIR))
 
-    _ensure_accuracy_environment()
+    _ensure_evalscope_environment(ACCURACY_AUTO_PREPARE, "accuracy")
 
     model_name = MODEL_CFG_PARAMS.get("model", "")
     host_ip = MODEL_CFG_PARAMS.get("host_ip", "")
@@ -852,6 +923,269 @@ def run_accuracy_mode():
     print("  [accuracy] CMD: {}".format(" ".join(cmd)))
     _run_checked(cmd, cwd=work_dir, label="evalscope accuracy")
     print("  [accuracy] 精度测试完成")
+
+
+# -------------------- VLM 模式: evalscope 多模态精度测试 --------------------
+def _validate_vlm_limit(value, source):
+    """校验 evalscope --limit：int 表示前 N 条，float 表示百分比 (0, 1]。"""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError("{} 必须是数字，当前: {!r}".format(source, value))
+    if value == 0:
+        return None
+    if isinstance(value, int):
+        if value < 0:
+            raise RuntimeError("{} 不能小于 0".format(source))
+        return value
+    if value <= 0 or value > 1:
+        raise RuntimeError(
+            "{} 的小数形式表示百分比，必须在 (0, 1] 之间；"
+            "要限制条数请用整数，当前: {!r}".format(source, value)
+        )
+    return value
+
+
+def _validate_vlm_subsets(dataset, subset_list):
+    """MMMU 子集名做一次校验，避免配置拼错后白跑。"""
+    if not subset_list or dataset != "mmmu":
+        return
+    unknown = [s for s in subset_list if s not in MMMU_SUBSET_LIST]
+    if unknown:
+        raise RuntimeError(
+            "未知的 MMMU 子集: {}；可选: {}".format(
+                ", ".join(unknown), ", ".join(MMMU_SUBSET_LIST)
+            )
+        )
+
+
+def _merge_vlm_dataset_args(dataset, subset_list):
+    """把 subset_list 合并进 evalscope dataset_args。"""
+    if isinstance(VLM_DATASET_ARGS, str):
+        base_args = json.loads(VLM_DATASET_ARGS)
+    else:
+        base_args = copy.deepcopy(VLM_DATASET_ARGS or {})
+    if not isinstance(base_args, dict):
+        raise RuntimeError("vlm.dataset_args 必须是 JSON 对象，当前: {!r}".format(base_args))
+    base_args = dict(base_args)
+
+    if subset_list:
+        dataset_cfg = dict(base_args.get(dataset) or {})
+        dataset_cfg["subset_list"] = list(subset_list)
+        base_args[dataset] = dataset_cfg
+    return base_args
+
+
+def _build_vlm_cmd(
+    model_name,
+    api_url,
+    api_key,
+    work_dir,
+    dataset,
+    dataset_hub,
+    batch_size,
+    generation_config,
+    dataset_args,
+    limit,
+    repeats,
+):
+    """拼装 evalscope 多模态评测命令。"""
+    cmd = [
+        "evalscope",
+        "eval",
+        "--model", model_name,
+        "--api-url", api_url,
+        "--api-key", api_key,
+        "--eval-type", "openai_api",
+        "--datasets", dataset,
+        "--eval-batch-size", str(batch_size),
+        "--work-dir", work_dir,
+        "--generation-config", _accuracy_json_arg(
+            generation_config, "generation_config", "vlm"
+        ),
+        "--dataset-args", _accuracy_json_arg(dataset_args, "dataset_args", "vlm"),
+    ]
+    if dataset_hub:
+        cmd += ["--dataset-hub", dataset_hub]
+    if limit is not None:
+        cmd += ["--limit", str(limit)]
+    if repeats and int(repeats) > 1:
+        cmd += ["--repeats", str(int(repeats))]
+    return cmd
+
+
+def _find_latest_vlm_report(work_dir, dataset):
+    """找到最近一次评测生成的 reports/{model}/{dataset}.json。"""
+    pattern = os.path.join(work_dir, "**", "reports", "*", "{}.json".format(dataset))
+    reports = glob.glob(pattern, recursive=True)
+    if not reports:
+        return None
+    return max(reports, key=os.path.getmtime)
+
+
+def _score_value(value):
+    """evalscope 的 score 可能是 float 或 {metric: float}。"""
+    if isinstance(value, dict):
+        for v in value.values():
+            return float(v)
+        return 0.0
+    return float(value or 0.0)
+
+
+def _extract_vlm_scores(report):
+    """从 evalscope report JSON 里提取总体和子集分数。"""
+    metrics = report.get("metrics") or []
+    if not metrics:
+        return _score_value(report.get("score", 0.0)), 0, _score_value(report.get("score", 0.0)), []
+
+    metric = metrics[0]
+    total = _score_value(metric.get("score", report.get("score", 0.0)))
+    macro = _score_value(metric.get("macro_score", total))
+    num = int(metric.get("num", 0) or 0)
+
+    subsets = []
+    for category in metric.get("categories") or []:
+        for subset in category.get("subsets") or []:
+            subsets.append({
+                "name": str(subset.get("name", "")),
+                "num": int(subset.get("num", 0) or 0),
+                "score": _score_value(subset.get("score", 0.0)),
+            })
+
+    # 少数数据集没有 subsets 层级，退化成 category 粒度
+    if not subsets:
+        for category in metric.get("categories") or []:
+            name = category.get("name", "")
+            if isinstance(name, (list, tuple)):
+                name = "/".join(str(x) for x in name)
+            subsets.append({
+                "name": str(name),
+                "num": int(category.get("num", 0) or 0),
+                "score": _score_value(category.get("score", 0.0)),
+            })
+
+    if not num:
+        num = sum(row["num"] for row in subsets)
+
+    return total, num, macro, subsets
+
+
+def _print_vlm_summary(summary):
+    """打印总体 acc 和每个子集的 acc。"""
+    print("  [vlm] 报告: {}".format(summary["report_path"]))
+    print(
+        "  [vlm] 总样本: {}  总体 acc: {:.4f}  子集宏平均: {:.4f}".format(
+            summary["num"], summary["score"], summary["macro_score"]
+        )
+    )
+
+    subsets = summary["subsets"]
+    if not subsets:
+        return
+
+    name_width = max([len("Subset")] + [len(row["name"]) for row in subsets])
+    print("    {:<{w}}  {:>6}  {:>8}".format("Subset", "Num", "acc", w=name_width))
+    print("    {}  {}  {}".format("-" * name_width, "-" * 6, "-" * 8))
+    for row in subsets:
+        print(
+            "    {:<{w}}  {:>6}  {:>8.4f}".format(
+                row["name"], row["num"], row["score"], w=name_width
+            )
+        )
+
+
+def _write_vlm_summary(summary, report_path):
+    """把汇总写到 report 所在评测目录下，json + csv 各一份。"""
+    marker = os.sep + "reports" + os.sep
+    marker_index = report_path.find(marker)
+    run_root = report_path[:marker_index] if marker_index > 0 else os.path.dirname(report_path)
+    json_path = os.path.join(run_root, "vlm_summary.json")
+    csv_path = os.path.join(run_root, "vlm_summary.csv")
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["subset", "num", "acc"])
+        for row in summary["subsets"]:
+            writer.writerow([row["name"], row["num"], "{:.6f}".format(row["score"])])
+
+    print("  [vlm] 汇总已写入: {} , {}".format(json_path, csv_path))
+
+
+def run_vlm_mode():
+    """执行 evalscope 多模态精度测试，默认 MMMU。"""
+    print("========== VLM 模式: evalscope 多模态精度测试 ==========")
+    print("数据集 = {}".format(VLM_DATASET))
+    print("数据集源 = {}".format(VLM_DATASET_HUB or "默认"))
+    print("子集 = {}".format(", ".join(VLM_SUBSET_LIST) if VLM_SUBSET_LIST else "全部"))
+    print("limit = {}".format("全部" if not VLM_LIMIT else VLM_LIMIT))
+    print("repeats = {}".format(VLM_REPEATS))
+    print("eval_batch_size = {}".format(VLM_EVAL_BATCH_SIZE))
+    print("工作目录 = {}".format(VLM_WORK_DIR))
+
+    _ensure_evalscope_environment(VLM_AUTO_PREPARE, "vlm")
+
+    model_name = MODEL_CFG_PARAMS.get("model", "")
+    host_ip = MODEL_CFG_PARAMS.get("host_ip", "")
+    host_port = MODEL_CFG_PARAMS.get("host_port", "")
+    api_key = MODEL_CFG_PARAMS.get("api_key", "EMPTY") or "EMPTY"
+    if not model_name or not host_ip or not host_port:
+        raise RuntimeError(
+            "vlm 模式需要在 vlm.model_cfg_params 里配置 model / host_ip / host_port"
+        )
+    if not VLM_DATASET:
+        raise RuntimeError("vlm 模式的 dataset 不能为空")
+
+    _validate_vlm_subsets(VLM_DATASET, VLM_SUBSET_LIST)
+    limit = _validate_vlm_limit(VLM_LIMIT, "vlm.limit")
+    dataset_args = _merge_vlm_dataset_args(VLM_DATASET, VLM_SUBSET_LIST)
+
+    api_url = "http://{}:{}/v1".format(host_ip, host_port)
+    work_dir = (
+        VLM_WORK_DIR
+        if os.path.isabs(VLM_WORK_DIR)
+        else os.path.join(SCRIPT_DIR, VLM_WORK_DIR)
+    )
+    os.makedirs(work_dir, exist_ok=True)
+
+    cmd = _build_vlm_cmd(
+        model_name=model_name,
+        api_url=api_url,
+        api_key=api_key,
+        work_dir=work_dir,
+        dataset=VLM_DATASET,
+        dataset_hub=VLM_DATASET_HUB,
+        batch_size=VLM_EVAL_BATCH_SIZE,
+        generation_config=VLM_GENERATION_CONFIG,
+        dataset_args=dataset_args,
+        limit=limit,
+        repeats=VLM_REPEATS,
+    )
+    print("  [vlm] CMD: {}".format(" ".join(cmd)))
+    _run_checked(cmd, cwd=work_dir, label="evalscope vlm")
+
+    report_path = _find_latest_vlm_report(work_dir, VLM_DATASET)
+    if not report_path:
+        print("  [vlm] 未找到评测报告，跳过汇总")
+        return
+
+    with open(report_path, "r", encoding="utf-8") as f:
+        report = json.load(f)
+    total, num, macro, subsets = _extract_vlm_scores(report)
+    summary = {
+        "dataset": VLM_DATASET,
+        "dataset_hub": VLM_DATASET_HUB,
+        "model": model_name,
+        "report_path": report_path,
+        "num": num,
+        "score": total,
+        "macro_score": macro,
+        "subsets": subsets,
+    }
+    _print_vlm_summary(summary)
+    _write_vlm_summary(summary, report_path)
+    print("  [vlm] 多模态精度测试完成")
 
 
 # 路径常量
@@ -1951,10 +2285,21 @@ def _apply_mode_overrides(args, mode):
         MODEL_CFG_PARAMS["host_ip"] = args.host_ip
     if args.host_port is not None:
         MODEL_CFG_PARAMS["host_port"] = args.host_port
-    if args.api_key and mode in ("agent", "accuracy", "performance-n"):
+    if args.api_key and mode in ("agent", "accuracy", "vlm", "performance-n"):
         MODEL_CFG_PARAMS["api_key"] = args.api_key
     if args.path and mode in ("performance-c", "performance-n"):
         MODEL_CFG_PARAMS["path"] = args.path
+
+
+def _parse_vlm_limit_arg(text):
+    """命令行 limit：写整数表示前 N 条，写小数表示百分比，保留原始类型。"""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("limit 必须是数字，当前: {}".format(text))
+    if "." not in text and "e" not in text.lower():
+        return int(value)
+    return value
 
 
 def main():
@@ -1966,7 +2311,7 @@ def main():
         action="extend",
         default=None,
         help=(
-            "运行模式，支持 performance-c / performance-n / agent / accuracy 任意组合；"
+            "运行模式，支持 performance-c / performance-n / agent / accuracy / vlm 任意组合；"
             "可写 --mode agent performance-c，也可写 --mode agent,performance-c"
         ),
     )
@@ -1982,6 +2327,20 @@ def main():
                     help="accuracy 模式: eval-batch-size，默认 accuracy.eval_batch_size")
     ap.add_argument("--accuracy-work-dir", default=None,
                     help="accuracy 模式: 输出目录，默认 accuracy.work_dir")
+    ap.add_argument("--vlm-dataset", default=None,
+                    help="vlm 模式: evalscope 数据集，默认 vlm.dataset (mmmu)")
+    ap.add_argument("--vlm-dataset-hub", choices=["modelscope", "huggingface"], default=None,
+                    help="vlm 模式: 数据集下载源，默认 vlm.dataset_hub")
+    ap.add_argument("--vlm-subset", nargs="+", default=None,
+                    help="vlm 模式: 只评测指定子集，默认 vlm.subset_list (空=全部)")
+    ap.add_argument("--vlm-limit", type=_parse_vlm_limit_arg, default=None,
+                    help="vlm 模式: 限制每个子集的评测数量；整数=前 N 条，小数=百分比；不传=全量")
+    ap.add_argument("--vlm-repeats", type=int, default=None,
+                    help="vlm 模式: 每个样例重复推理次数，默认 vlm.repeats")
+    ap.add_argument("--vlm-batch-size", type=int, default=None,
+                    help="vlm 模式: eval-batch-size，默认 vlm.eval_batch_size")
+    ap.add_argument("--vlm-work-dir", default=None,
+                    help="vlm 模式: 输出目录，默认 vlm.work_dir")
     ap.add_argument("--native-conversation-count", type=int, default=None,
                     help="native_multiturn: 取前 N 组有效多轮对话; 0=全部")
     ap.add_argument("--native-infer-mode", choices=["every", "last", "every_with_gt"], default=None,
@@ -2011,7 +2370,7 @@ def main():
     ap.add_argument("--model", dest="model", default=None, help="模型名")
     ap.add_argument("--host-ip", dest="host_ip", default=None, help="服务 IP")
     ap.add_argument("--host-port", dest="host_port", type=int, default=None, help="服务端口")
-    ap.add_argument("--api-key", dest="api_key", default=None, help="agent / accuracy / native_multiturn 模式 OpenAI API Key")
+    ap.add_argument("--api-key", dest="api_key", default=None, help="agent / accuracy / vlm / native_multiturn 模式 OpenAI API Key")
     ap.add_argument("--excel", default=None, help="Excel 输出路径 (默认当前文件夹下)")
     ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
     args = ap.parse_args()
@@ -2019,6 +2378,8 @@ def main():
     global RUN_MODE, RUN_MODES
     global AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
     global ACCURACY_DATASET, ACCURACY_EVAL_BATCH_SIZE, ACCURACY_WORK_DIR
+    global VLM_DATASET, VLM_DATASET_HUB, VLM_SUBSET_LIST, VLM_LIMIT, VLM_REPEATS
+    global VLM_EVAL_BATCH_SIZE, VLM_WORK_DIR
     global NATIVE_CONVERSATION_COUNT, NATIVE_INFER_MODE
     global NATIVE_WORK_DIR, NATIVE_RESULT_DIR, NATIVE_RAW_SHAREGPT_PATH
 
@@ -2052,6 +2413,21 @@ def main():
     if args.accuracy_work_dir:
         ACCURACY_WORK_DIR = args.accuracy_work_dir
 
+    if args.vlm_dataset:
+        VLM_DATASET = args.vlm_dataset
+    if args.vlm_dataset_hub:
+        VLM_DATASET_HUB = args.vlm_dataset_hub
+    if args.vlm_subset:
+        VLM_SUBSET_LIST = list(args.vlm_subset)
+    if args.vlm_limit is not None:
+        VLM_LIMIT = args.vlm_limit
+    if args.vlm_repeats is not None:
+        VLM_REPEATS = args.vlm_repeats
+    if args.vlm_batch_size is not None:
+        VLM_EVAL_BATCH_SIZE = args.vlm_batch_size
+    if args.vlm_work_dir:
+        VLM_WORK_DIR = args.vlm_work_dir
+
     cli_modes = _parse_mode_list(args.mode, "命令行 --mode") if args.mode else []
     run_modes = cli_modes or RUN_MODES
     print("运行模式 = {}（按顺序执行）".format(" -> ".join(run_modes)))
@@ -2064,6 +2440,8 @@ def main():
             run_agent_mode()
         elif mode == "accuracy":
             run_accuracy_mode()
+        elif mode == "vlm":
+            run_vlm_mode()
         elif mode in ("performance-c", "performance-n"):
             run_performance_mode(args)
         else:

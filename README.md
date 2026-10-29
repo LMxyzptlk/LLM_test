@@ -2,6 +2,14 @@
 
 ## 版本历史
 
+### v1.5.0 — 2026-10-29
+
+- **新增 VLM 多模态精度测试模式**
+  - `--mode vlm`，基于 evalscope，默认评测 MMMU validation（30 个学科 / 900 题）
+  - 新增 `vlm.cfg`：数据集源、子集筛选、limit、repeats、批次和生成参数
+  - 支持 `--vlm-subset` / `--vlm-limit` / `--vlm-dataset-hub` 等命令行覆盖
+  - 评测结束后自动汇总总体 acc 和各子集 acc，输出 `vlm_summary.json` / `vlm_summary.csv`
+
 ### v1.4.0 — 2026-09-09
 
 - **配置文件拆分**
@@ -55,6 +63,7 @@
 | `cfg-normal.cfg` | 公共配置 |
 | `agent.cfg` | Agent 模式专属配置 |
 | `accuracy.cfg` | Accuracy 模式专属配置 |
+| `vlm.cfg` | VLM 多模态精度模式专属配置 |
 | `performance-c.cfg` | Performance concat 拼接压测配置 |
 | `performance-n.cfg` | Performance native 原生多轮压测配置 |
 | `gen_datasets.py` | 提前批量生成 performance-c 压测数据集 |
@@ -81,11 +90,15 @@ python3 run_perf.py --mode agent --agent-dataset lite --agent-count 10
 # 5. Accuracy：evalscope 精度测试
 python3 run_perf.py --mode accuracy
 
-# 6. 混合运行
-python3 run_perf.py --mode agent performance-c accuracy
+# 6. VLM：evalscope MMMU 多模态精度测试
+python3 run_perf.py --mode vlm
+python3 run_perf.py --mode vlm --vlm-limit 10 --vlm-subset Accounting Art
+
+# 7. 混合运行
+python3 run_perf.py --mode agent performance-c accuracy vlm
 python3 run_perf.py --mode performance-n,accuracy
 
-# 7. 可选：预生成 performance-c 数据集
+# 8. 可选：预生成 performance-c 数据集
 python3 gen_datasets.py --dry-run
 python3 gen_datasets.py
 ```
@@ -166,6 +179,36 @@ Accuracy 模式专属配置：
 }
 ```
 
+### `vlm.cfg`
+
+VLM 多模态精度模式专属配置：
+
+```jsonc
+{
+  "dataset": "mmmu",
+  "dataset_hub": "modelscope",
+  "subset_list": [],          // 空=全部 30 个子集
+  "limit": 0,                 // 每个子集：0=全量；整数=前 N 条；小数=百分比
+  "repeats": 1,
+  "eval_batch_size": 4,
+  "work_dir": "outputs/vlm",
+  "generation_config": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 16384,
+    "timeout": 1800,
+    "retries": 2
+  },
+  // 可选：覆盖公共 model_cfg_params，例如 VLM 服务和性能测试不在同一端口
+  // "model_cfg_params": {"model": "Qwen3-VL-32B", "host_ip": "11.87.191.78", "host_port": 28888},
+  "dataset_args": {}
+}
+```
+
+`subset_list` 可选值（MMMU 30 个学科）：Accounting、Agriculture、Architecture_and_Engineering、Art、Art_Theory、Basic_Medical_Science、Biology、Chemistry、Clinical_Medicine、Computer_Science、Design、Diagnostics_and_Laboratory_Medicine、Economics、Electronics、Energy_and_Power、Finance、Geography、History、Literature、Manage、Marketing、Materials、Math、Mechanical_Engineering、Music、Pharmacy、Physics、Psychology、Public_Health、Sociology。
+
+VLM 模式依赖 evalscope ≥ 1.6；缺失时 `auto_prepare` 会自动 `pip install evalscope`。首次评测会把 MMMU 数据集下载到 `~/.cache/modelscope/datasets`。
+
 ### `performance-c.cfg`
 
 Performance concat 拼接压测专属配置：
@@ -209,21 +252,23 @@ Performance native 原生多轮压测专属配置：
 
 ## Mode
 
-支持四个直接模式：
+支持五个直接模式：
 
 ```text
 performance-c
 performance-n
 agent
 accuracy
+vlm
 ```
 
 也支持任意组合：
 
 ```bash
-python3 run_perf.py --mode agent performance-c accuracy
+python3 run_perf.py --mode agent performance-c accuracy vlm
 python3 run_perf.py --mode performance-n,accuracy
 python3 run_perf.py --mode accuracy --mode agent
+python3 run_perf.py --mode vlm --vlm-limit 10
 ```
 
 配置文件里的 `mode` 也支持字符串或数组：
@@ -247,6 +292,7 @@ results/performance/native_multiturn/ # performance-n Excel
 outputs/performance/native_multiturn/ # performance-n AISBench 输出
 outputs/agent/          # agent 输出
 outputs/accuracy/       # accuracy 输出
+outputs/vlm/{timestamp}/ # vlm 输出（含 vlm_summary.json / vlm_summary.csv）
 outputs/agent_configs/  # agent 自动生成的 ais_bench 配置
 raw_datasets/           # 自动下载的原始数据
 ```

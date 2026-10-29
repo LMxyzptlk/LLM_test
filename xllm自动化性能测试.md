@@ -2,12 +2,13 @@
 
 ## 1. 配置文件
 
-配置已拆分为一个公共文件和四个模式专属文件：
+配置已拆分为一个公共文件和五个模式专属文件：
 
 ```text
 cfg-normal.cfg       公共配置
 agent.cfg            Agent 模式专属配置
 accuracy.cfg         Accuracy 模式专属配置
+vlm.cfg              VLM 多模态精度模式专属配置
 performance-c.cfg    Performance concat 拼接压测配置
 performance-n.cfg    Performance native 原生多轮压测配置
 ```
@@ -117,15 +118,44 @@ performance-n.cfg    Performance native 原生多轮压测配置
 }
 ```
 
+### 1.6 `vlm.cfg`
+
+```jsonc
+{
+  "dataset": "mmmu",
+  "dataset_hub": "modelscope",
+  "subset_list": [],
+  "limit": 0,
+  "repeats": 1,
+  "eval_batch_size": 4,
+  "work_dir": "outputs/vlm",
+  "generation_config": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 16384,
+    "timeout": 1800,
+    "retries": 2
+  },
+  "dataset_args": {}
+}
+```
+
+- `dataset`：默认 `mmmu`，评测 MMMU validation split（30 个学科 / 900 题）
+- `dataset_hub`：`modelscope` 或 `huggingface`
+- `subset_list`：留空跑全部；可填 `Accounting`、`Art`、`Math` 等 30 个子集
+- `limit`：按子集生效；`0` 全量；整数为前 N 条；小数为百分比 `(0, 1]`
+- `work_dir`：evalscope 会在其下按时间戳建子目录
+
 ## 2. 运行模式
 
-支持四个直接模式：
+支持五个直接模式：
 
 ```text
 performance-c
 performance-n
 agent
 accuracy
+vlm
 ```
 
 ### 2.1 Performance concat
@@ -160,12 +190,20 @@ python3 run_perf.py --mode accuracy
 
 用于 evalscope 精度测试。
 
-### 2.5 混合运行
+### 2.5 VLM
+
+```bash
+python3 run_perf.py --mode vlm
+```
+
+用于 evalscope 多模态精度测试，默认 MMMU。评测完成后会打印总体 acc 和各子集 acc，并在评测目录下生成 `vlm_summary.json` / `vlm_summary.csv`。
+
+### 2.6 混合运行
 
 支持任意组合：
 
 ```bash
-python3 run_perf.py --mode agent performance-c accuracy
+python3 run_perf.py --mode agent performance-c accuracy vlm
 python3 run_perf.py --mode performance-n,accuracy
 python3 run_perf.py --mode accuracy --mode agent
 ```
@@ -232,7 +270,26 @@ python3 run_perf.py \
   --accuracy-batch-size 8
 ```
 
-### 3.5 预生成 performance-c 数据集
+### 3.5 VLM
+
+```bash
+# 全量 MMMU
+python3 run_perf.py --mode vlm
+
+# 冒烟：只跑每个子集的前 10 题，并限制到 2 个子集
+python3 run_perf.py \
+  --mode vlm \
+  --vlm-limit 10 \
+  --vlm-subset Accounting Art \
+  --vlm-batch-size 4
+
+# 切换数据集源
+python3 run_perf.py --mode vlm --vlm-dataset-hub huggingface
+```
+
+注意：被测 VLM 服务需要支持 OpenAI 兼容的多模态消息（`image_url` 传入 base64 data URL）。VLM 模式依赖 evalscope ≥ 1.6，首次评测会把 MMMU 数据集下载到 `~/.cache/modelscope/datasets`。
+
+### 3.6 预生成 performance-c 数据集
 
 ```bash
 python3 gen_datasets.py --dry-run
@@ -248,12 +305,14 @@ results/performance/native_multiturn/ # performance-n Excel
 outputs/performance/native_multiturn/ # performance-n AISBench 输出
 outputs/agent/          # agent 输出
 outputs/accuracy/       # accuracy 输出
+outputs/vlm/{timestamp}/ # vlm 输出（含 vlm_summary.json / vlm_summary.csv）
 outputs/agent_configs/  # agent 自动生成的 ais_bench 配置
 raw_datasets/           # 自动下载的原始数据
 ```
 
 ## 5. 版本
 
+- v1.5.0：新增 VLM 多模态精度模式（MMMU）
 - v1.4.0：配置拆分为公共文件和模式专属文件，Performance 拆分为 `performance-c` / `performance-n`
 - v1.3.1：Performance concat / native 配置完全隔离
 - v1.3.0：新增 AISBench 原生 ShareGPT 多轮压测
