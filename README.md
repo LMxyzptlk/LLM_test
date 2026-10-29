@@ -2,6 +2,17 @@
 
 ## 版本历史
 
+### v1.6.1 — 2026-10-29
+
+- **完善性能测试预热（默认关闭，需显式开启）**
+  - 压测前按「用例并发 × 用例输出长度」先打若干轮预热请求，冷请求不再计入统计
+  - 新增 `warmup` 配置块（`enabled` / `rounds` / `requests` / `concurrency` / `max_out_len` / `timeout` / `sleep` / `reuse_prompts`），`performance-c` 和 `performance-n` 各自独立
+  - 预热默认给 prompt 加随机后缀，避免把待测 prompt 的前缀缓存提前写进去
+  - 新增 `ais_num_warmups`，可控制 ais_bench 自带的 `--num-warmups`（默认 1）
+  - 命令行覆盖：`--no-warmup` / `--warmup-rounds` / `--warmup-concurrency` / `--ais-num-warmups`
+  - 每轮打印预热耗时和 TTFT，并给出冷热差倍率
+  - **`warmup.enabled` 默认 `false`**：不改变原有冷跑口径，需要时在配置里打开
+
 ### v1.6.0 — 2026-10-29
 
 - **新增 LiveCodeBench 代码生成精度测试模式**
@@ -108,6 +119,8 @@ vim performance-c.cfg
 
 # 2. Performance concat：拼接压测数据集 + ais_bench
 python3 run_perf.py --mode performance-c
+python3 run_perf.py --mode performance-c --warmup-rounds 4   # 加强预热
+python3 run_perf.py --mode performance-c --no-warmup          # 关闭预热
 
 # 3. Performance native：AISBench 原生 ShareGPT 多轮压测
 python3 run_perf.py --mode performance-n
@@ -330,9 +343,22 @@ Performance concat 拼接压测专属配置：
   "dataset_types": ["sharegpt"],
   "raw_gsm_path": "",
   "raw_sharegpt_path": "",
-  "raw_swebench_path": ""
+  "raw_swebench_path": "",
+  "warmup": {
+    "enabled": false,
+    "rounds": 2,          // 预热轮数；每轮并发数 = 用例并发
+    "requests": 0,        // 覆盖总请求数；0 = rounds * 并发
+    "concurrency": 0,     // 0 = 跟随用例并发
+    "max_out_len": 0,     // 0 = 跟随用例输出长度
+    "timeout": 600,
+    "sleep": 2.0,
+    "reuse_prompts": false
+  },
+  "ais_num_warmups": 1
 }
 ```
+
+预热说明：**默认关闭**（`warmup.enabled=false`，保持原有冷跑口径）。ais_bench 自带的 `--num-warmups` 默认只发 1 条请求、且顺序发送，在请求数小的用例里首条冷请求会把均值拉高。把 `enabled` 改成 `true` 后，每次正式压测前会按**本用例的并发数和输出长度**再打 `rounds` 轮（每轮 `并发` 条请求），把图捕获、显存池、连接池都跑热，这些请求不计入统计。`reuse_prompts=false` 时会给预热 prompt 加随机后缀，避免预热把待测 prompt 的前缀缓存写进去、让正式压测变成缓存命中。
 
 ### `performance-n.cfg`
 
@@ -351,7 +377,18 @@ Performance native 原生多轮压测专属配置：
   "generation_kwargs": {
     "temperature": 0.01,
     "ignore_eos": false
-  }
+  },
+  "warmup": {
+    "enabled": false,
+    "rounds": 2,
+    "requests": 0,
+    "concurrency": 0,
+    "max_out_len": 0,
+    "timeout": 600,
+    "sleep": 2.0,
+    "reuse_prompts": false
+  },
+  "ais_num_warmups": 1
 }
 ```
 

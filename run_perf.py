@@ -56,6 +56,7 @@ JSON 用例文件格式 (序号->用例串 映射):
 数据集 jsonl 在脚本所在文件夹下查找。若找不到, 自动调用 process_dataset.py 生成。
 启动前会自动检查 ais_bench benchmark 和本次用到的原始数据集；缺失时自动下载/安装，已存在则跳过。
 输出(request_rate/max_out_len/path/model/host_ip/host_port)写入 vllm_api_general_stream.py。
+每个用例压测前会按本用例的并发和输出长度预热若干轮（performance-c / performance-n 的 warmup 配置），预热请求不计入统计。
 最终所有用例结果按 (数据集类型, 输入长度, pfx) 分组写 excel, 保存在执行时的当前文件夹下。
 """
 
@@ -71,7 +72,9 @@ import subprocess
 import sys
 import time
 import shutil
+import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 
 # ============================================================
@@ -239,6 +242,7 @@ def _load_cfg():
         "dataset_dir", "result_dir", "input_len", "concurrencies",
         "default_max_out_len", "default_request_rate", "default_pfx",
         "dataset_types", "raw_gsm_path", "raw_sharegpt_path", "raw_swebench_path",
+        "warmup", "ais_num_warmups",
     }
     allowed_performance_vl_keys = {
         "dataset", "concurrencies", "number", "max_out_len", "min_out_len",
@@ -250,7 +254,7 @@ def _load_cfg():
     allowed_performance_n_keys = {
         "conversation_count", "infer_mode", "concurrencies", "max_out_len",
         "request_rate", "work_dir", "result_dir", "raw_sharegpt_path",
-        "generation_kwargs",
+        "generation_kwargs", "warmup", "ais_num_warmups",
     }
 
     _check_cfg_keys(common, allowed_common_keys, "cfg-normal.cfg")
@@ -319,6 +323,10 @@ DEFAULT_REQUEST_RATE = _CONCAT_CFG.get("default_request_rate")
 DEFAULT_PFX = _CONCAT_CFG.get("default_pfx")
 DATASET_TYPES = _CONCAT_CFG.get("dataset_types", ["sharegpt"])
 
+# Performance 预热配置（concat / native 各自独立，留空用默认值）
+CONCAT_WARMUP = dict(_CONCAT_CFG.get("warmup", {}) or {})
+CONCAT_AIS_NUM_WARMUPS = int(_CONCAT_CFG.get("ais_num_warmups", 1))
+
 # Performance native_multiturn 专属配置
 _NATIVE_MULTITURN_CFG = _PERFORMANCE_CFG.get("native_multiturn", {})
 NATIVE_CONVERSATION_COUNT = int(_NATIVE_MULTITURN_CFG.get("conversation_count", 100))
@@ -339,6 +347,14 @@ NATIVE_RAW_SHAREGPT_PATH = _NATIVE_MULTITURN_CFG.get("raw_sharegpt_path", "")
 NATIVE_GENERATION_KWARGS = _NATIVE_MULTITURN_CFG.get(
     "generation_kwargs", {"temperature": 0.01, "ignore_eos": False}
 )
+NATIVE_WARMUP = dict(_NATIVE_MULTITURN_CFG.get("warmup", {}) or {})
+NATIVE_AIS_NUM_WARMUPS = int(_NATIVE_MULTITURN_CFG.get("ais_num_warmups", 1))
+
+# 命令行覆盖：None 表示按配置
+WARMUP_ENABLED_OVERRIDE = None
+WARMUP_ROUNDS_OVERRIDE = None
+WARMUP_CONCURRENCY_OVERRIDE = None
+AIS_NUM_WARMUPS_OVERRIDE = None
 
 # Accuracy 精度测试配置
 ACCURACY_DATASET = _ACCURACY_CFG.get("dataset", "gpqa_diamond")
@@ -2285,6 +2301,41 @@ def bind_dataset(ds_name):
         print("  [ln ] {} -> {}".format(ds_path, link_path))
 
 
+def _effective_ais_num_warmups(configured):
+    """ais_bench 自带预热次数；命令行优先，最小 0。"""
+    if AIS_NUM_WARMUPS_OVERRIDE is not None:
+        return max(0, int(AIS_NUM_WARMUPS_OVERRIDE))
+    return max(0, int(configured))
+
+
+_AIS_NUM_WARMUPS_SUPPORTED = None
+
+
+def _ais_supports_num_warmups():
+    """老版本 ais_bench 没有 --num-warmups，避免传了直接报错。"""
+    global _AIS_NUM_WARMUPS_SUPPORTED
+    if _AIS_NUM_WARMUPS_SUPPORTED is None:
+        try:
+            proc = subprocess.run(
+                ["ais_bench", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            _AIS_NUM_WARMUPS_SUPPORTED = "--num-warmups" in (proc.stdout or "")
+        except Exception:
+            _AIS_NUM_WARMUPS_SUPPORTED = False
+    return _AIS_NUM_WARMUPS_SUPPORTED
+
+
+def _append_ais_num_warmups(cmd, configured):
+    """按需追加 ais_bench --num-warmups；不支持该参数时保持原样。"""
+    if not _ais_supports_num_warmups():
+        print("  [warm] 当前 ais_bench 不支持 --num-warmups，跳过该参数")
+        return cmd
+    return cmd + ["--num-warmups", str(_effective_ais_num_warmups(configured))]
+
+
 def run_ais_bench():
     """跑一次 ais_bench, 返回 (returncode, stdout+stderr).
 
@@ -2292,9 +2343,10 @@ def run_ais_bench():
     落在哪取决于运行时工作目录, 必须和执行 run_perf.py 的位置一致。
     输出同时打到终端，方便实时观察进度。
     """
-    print("  [run] {}  (cwd={})".format(" ".join(AIS_BENCH_CMD), RUN_CWD))
+    cmd = _append_ais_num_warmups(list(AIS_BENCH_CMD), CONCAT_AIS_NUM_WARMUPS)
+    print("  [run] {}  (cwd={})".format(" ".join(cmd), RUN_CWD))
     proc = subprocess.run(
-        AIS_BENCH_CMD,
+        cmd,
         cwd=RUN_CWD,
         stdout=None,
         stderr=None,
@@ -2560,6 +2612,275 @@ def write_excel(cases, out_path=None):
     print("\n[done] Excel 已保存: {}".format(out_path))
 
 
+# -------------------- 服务预热 --------------------
+# ais_bench 自带的 --num-warmups 默认只发 1 条请求、且是单条顺序发送，
+# 请求数小的用例里首条冷请求对均值影响很大。这里在每次压测前按
+# 「用例并发 × 用例输出长度」再多打几轮，把图捕获、显存池、连接池都跑热。
+WARMUP_DEFAULTS = {
+    # 默认关闭：预热会改变测量开始时的服务状态，需要和基线同口径时手动打开
+    "enabled": False,
+    "rounds": 2,
+    "requests": 0,
+    "concurrency": 0,
+    "max_out_len": 0,
+    "timeout": 600,
+    "sleep": 2.0,
+    # True=直接复用语料里的 prompt；False=加随机后缀，避免把待测 prompt 的
+    # 前缀缓存提前写进去，导致正式压测变成缓存命中、数据偏乐观
+    "reuse_prompts": False,
+}
+
+
+def _warmup_settings(cfg, concurrency, out_len):
+    """把配置里的 warmup 块解析成实际生效的参数。"""
+    settings = dict(WARMUP_DEFAULTS)
+    if cfg:
+        unknown = sorted(set(cfg) - set(WARMUP_DEFAULTS))
+        if unknown:
+            raise RuntimeError(
+                "warmup 里发现未知字段: {}".format(", ".join(unknown))
+            )
+        settings.update(cfg)
+
+    if WARMUP_ENABLED_OVERRIDE is not None:
+        settings["enabled"] = WARMUP_ENABLED_OVERRIDE
+    if WARMUP_ROUNDS_OVERRIDE is not None:
+        settings["rounds"] = WARMUP_ROUNDS_OVERRIDE
+    if WARMUP_CONCURRENCY_OVERRIDE is not None:
+        settings["concurrency"] = WARMUP_CONCURRENCY_OVERRIDE
+
+    settings["rounds"] = int(settings["rounds"])
+    settings["requests"] = int(settings["requests"])
+    settings["concurrency"] = int(settings["concurrency"]) or int(concurrency)
+    if settings["concurrency"] < 1:
+        settings["concurrency"] = 1
+    settings["max_out_len"] = int(settings["max_out_len"]) or int(out_len)
+    settings["timeout"] = float(settings["timeout"])
+    settings["sleep"] = float(settings["sleep"])
+
+    if settings["rounds"] < 0:
+        raise RuntimeError("warmup.rounds 不能小于 0")
+    if settings["requests"] < 0:
+        raise RuntimeError("warmup.requests 不能小于 0")
+
+    requested = settings["requests"]
+    settings["total"] = (
+        requested if requested > 0 else settings["rounds"] * settings["concurrency"]
+    )
+    return settings
+
+
+def _load_warmup_prompts(path, count):
+    """从句柄里取若干 prompt：支持压测 jsonl(question) 和 ShareGPT(json 数组)。"""
+    if count < 1:
+        return []
+    prompts = []
+    try:
+        if path.endswith(".jsonl"):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    text = item.get("question") or item.get("prompt") or ""
+                    if text:
+                        prompts.append(text)
+                    if len(prompts) >= count:
+                        break
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for item in data:
+                conversations = item.get("conversations") or []
+                for turn in conversations:
+                    if turn.get("from") == "human":
+                        text = turn.get("value") or ""
+                        if text:
+                            prompts.append(text)
+                        break
+                if len(prompts) >= count:
+                    break
+    except Exception as exc:
+        print("  [warm] 读取语料失败({}): {}".format(path, exc))
+        return []
+    return prompts
+
+
+def _warmup_one(base_url, model, api_key, prompt, max_tokens, timeout):
+    """发一条流式 chat 请求，返回耗时与 TTFT。失败不抛异常。"""
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+        "stream": True,
+    }
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+    )
+    request.add_header("Content-Type", "application/json")
+    if api_key:
+        request.add_header("Authorization", "Bearer {}".format(api_key))
+
+    started = time.time()
+    first_token_at = None
+    chunks = 0
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            for raw in response:
+                line = raw.decode("utf-8", "ignore").strip()
+                if not line.startswith("data:"):
+                    continue
+                body = line[5:].strip()
+                if body == "[DONE]":
+                    break
+                try:
+                    payload_chunk = json.loads(body)
+                except ValueError:
+                    continue
+                choices = payload_chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                if delta.get("content"):
+                    if first_token_at is None:
+                        first_token_at = time.time()
+                    chunks += 1
+        return {
+            "ok": chunks > 0,
+            "elapsed": time.time() - started,
+            "ttft": (first_token_at - started) if first_token_at else None,
+            "error": "" if chunks > 0 else "empty_response",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "elapsed": time.time() - started,
+            "ttft": None,
+            "error": "{}: {}".format(type(exc).__name__, exc),
+        }
+
+
+def _run_warmup(label, prompts, settings, base_url, model, api_key):
+    """按配置跑若干轮并发预热请求；失败只告警，不中断压测。"""
+    if not settings["enabled"]:
+        print("  [warm] {} 预热已关闭 (warmup.enabled=false)".format(label))
+        return None
+    if settings["total"] <= 0:
+        print("  [warm] {} 预热请求数为 0，跳过".format(label))
+        return None
+    if not prompts:
+        print("  [warm] {} 没有可用语料，跳过预热".format(label))
+        return None
+
+    concurrency = settings["concurrency"]
+    total = settings["total"]
+    waves = max(1, (total + concurrency - 1) // concurrency)
+
+    print(
+        "  [warm] {} 预热: {} 请求 / {} 轮, 并发 {}, 输出上限 {} tokens".format(
+            label, total, waves, concurrency, settings["max_out_len"]
+        )
+    )
+
+    sent = 0
+    failed = 0
+    last_error = ""
+    wave_avgs = []
+
+    for wave in range(1, waves + 1):
+        count = min(concurrency, total - sent)
+        if count <= 0:
+            break
+        tasks = []
+        for index in range(count):
+            prompt = prompts[(sent + index) % len(prompts)]
+            if not settings["reuse_prompts"]:
+                prompt = "{}\n\n[warmup {} {}]".format(prompt, wave, index)
+            tasks.append(prompt)
+        sent += count
+
+        with ThreadPoolExecutor(max_workers=count) as executor:
+            results = list(
+                executor.map(
+                    lambda text: _warmup_one(
+                        base_url, model, api_key, text,
+                        settings["max_out_len"], settings["timeout"],
+                    ),
+                    tasks,
+                )
+            )
+
+        ok_results = [item for item in results if item["ok"]]
+        failed += len(results) - len(ok_results)
+        for item in results:
+            if not item["ok"] and item["error"]:
+                last_error = item["error"]
+        if ok_results:
+            avg = sum(item["elapsed"] for item in ok_results) / len(ok_results)
+            ttfts = [item["ttft"] for item in ok_results if item["ttft"] is not None]
+            avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
+            wave_avgs.append(avg)
+            print(
+                "  [warm] 第 {}/{} 轮: {}/{} 成功, 平均 {:.2f}s, TTFT {:.2f}s".format(
+                    wave, waves, len(ok_results), len(results), avg, avg_ttft
+                )
+            )
+        else:
+            print("  [warm] 第 {}/{} 轮: 全部失败".format(wave, waves))
+
+    if failed:
+        print(
+            "  [warm] 警告: {} 个预热请求失败, 最后一个错误: {}".format(
+                failed, last_error
+            )
+        )
+    # 首轮耗时太小时倍数没有参考价值（比如本地桩服务），直接不打印
+    if len(wave_avgs) >= 2 and wave_avgs[-1] > 0 and wave_avgs[0] >= 0.1:
+        print(
+            "  [warm] 冷热差: 首轮 {:.2f}s -> 末轮 {:.2f}s ({:.1f}x)".format(
+                wave_avgs[0], wave_avgs[-1], wave_avgs[0] / wave_avgs[-1]
+            )
+        )
+
+    if settings["sleep"] > 0:
+        print("  [warm] 等待 {:.1f}s 让服务侧队列收敛".format(settings["sleep"]))
+        time.sleep(settings["sleep"])
+    print("  [warm] {} 预热完成".format(label))
+    return {
+        "requests": sent,
+        "failed": failed,
+        "wave_avgs": wave_avgs,
+    }
+
+
+def _warmup_before_case(cfg, label, dataset_path, concurrency, out_len):
+    """压测前预热；语料按扩展名自动识别 (jsonl=question, json=ShareGPT)。"""
+    settings = _warmup_settings(cfg, concurrency, out_len)
+    if not settings["enabled"]:
+        print("  [warm] {} 预热已关闭 (warmup.enabled=false)".format(label))
+        return None
+    if settings["total"] <= 0:
+        print("  [warm] {} 预热请求数为 0，跳过".format(label))
+        return None
+
+    model = MODEL_CFG_PARAMS.get("model", "")
+    host_ip = MODEL_CFG_PARAMS.get("host_ip", "")
+    host_port = MODEL_CFG_PARAMS.get("host_port", "")
+    api_key = MODEL_CFG_PARAMS.get("api_key", "") or ""
+    if not model or not host_ip or not host_port:
+        print("  [warm] {} 缺少 model / host_ip / host_port，跳过预热".format(label))
+        return None
+
+    prompts = _load_warmup_prompts(dataset_path, settings["concurrency"])
+    return _run_warmup(
+        label, prompts, settings,
+        "http://{}:{}/v1".format(host_ip, host_port), model, api_key,
+    )
+
+
 # -------------------- 主流程 --------------------
 def run_case(case, skip_run=False):
     """跑一个用例。case: dict from parse_case_str / load_cases."""
@@ -2602,11 +2923,21 @@ def run_case(case, skip_run=False):
             ds_name, ds_path = generate_dataset(dataset_type, input_len, concurrency, pfx)
         print("  [ds ] {}".format(ds_name))
 
-        # 2) 改动态配置 (max_out_len + request_rate + batch_size，每个用例不同)
+        # 2) 预热：按本用例的并发和输出长度把服务打热，冷请求不进统计
+        if not skip_run:
+            _warmup_before_case(
+                CONCAT_WARMUP,
+                "{}".format(case_name),
+                ds_path,
+                concurrency,
+                out_len,
+            )
+
+        # 3) 改动态配置 (max_out_len + request_rate + batch_size，每个用例不同)
         cfg = {"max_out_len": out_len, "request_rate": request_rate, "batch_size": concurrency}
         set_model_cfg(cfg)
 
-        # 3) 绑定数据集
+        # 4) 绑定数据集
         bind_dataset(ds_name)
 
         before_dirs = set(
@@ -2872,16 +3203,26 @@ def run_native_multiturn_mode(args):
             if args.skip_run:
                 result_dir = find_latest_result(set(), output_root=work_dir)
             else:
+                _warmup_before_case(
+                    NATIVE_WARMUP,
+                    case_name,
+                    dataset_path,
+                    concurrency,
+                    out_len,
+                )
                 cfg_path = _build_native_multiturn_config(
                     concurrency, out_len, request_rate, dataset_path, work_dir
                 )
-                cmd = [
-                    "ais_bench",
-                    cfg_path,
-                    "--mode", "perf",
-                    "--debug",
-                    "--work-dir", work_dir,
-                ]
+                cmd = _append_ais_num_warmups(
+                    [
+                        "ais_bench",
+                        cfg_path,
+                        "--mode", "perf",
+                        "--debug",
+                        "--work-dir", work_dir,
+                    ],
+                    NATIVE_AIS_NUM_WARMUPS,
+                )
                 print("  [native] CMD: {}".format(" ".join(cmd)))
                 _run_checked(cmd, cwd=SCRIPT_DIR, label="ais_bench native multiturn")
                 result_dir = find_latest_result(before_dirs, output_root=work_dir)
@@ -3181,6 +3522,14 @@ def main():
     ap.add_argument("--api-key", dest="api_key", default=None, help="agent / accuracy / vlm / performance-vl / native_multiturn 模式 OpenAI API Key")
     ap.add_argument("--excel", default=None, help="Excel 输出路径 (默认当前文件夹下)")
     ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
+    ap.add_argument("--no-warmup", action="store_true",
+                    help="关闭压测前的服务预热 (performance-c / performance-n)")
+    ap.add_argument("--warmup-rounds", type=int, default=None,
+                    help="预热轮数，每轮并发数等于用例并发；默认取性能配置的 warmup.rounds")
+    ap.add_argument("--warmup-concurrency", type=int, default=None,
+                    help="预热并发数；默认跟随用例并发")
+    ap.add_argument("--ais-num-warmups", type=int, default=None,
+                    help="传给 ais_bench 的 --num-warmups；默认取性能配置，不配时为 1")
     args = ap.parse_args()
 
     global RUN_MODE, RUN_MODES
@@ -3199,6 +3548,17 @@ def main():
     global PERF_VL_WORK_DIR, PERF_VL_RESULT_DIR
     global NATIVE_CONVERSATION_COUNT, NATIVE_INFER_MODE
     global NATIVE_WORK_DIR, NATIVE_RESULT_DIR, NATIVE_RAW_SHAREGPT_PATH
+    global WARMUP_ENABLED_OVERRIDE, WARMUP_ROUNDS_OVERRIDE
+    global WARMUP_CONCURRENCY_OVERRIDE, AIS_NUM_WARMUPS_OVERRIDE
+
+    if args.no_warmup:
+        WARMUP_ENABLED_OVERRIDE = False
+    if args.warmup_rounds is not None:
+        WARMUP_ROUNDS_OVERRIDE = args.warmup_rounds
+    if args.warmup_concurrency is not None:
+        WARMUP_CONCURRENCY_OVERRIDE = args.warmup_concurrency
+    if args.ais_num_warmups is not None:
+        AIS_NUM_WARMUPS_OVERRIDE = args.ais_num_warmups
 
     if args.native_conversation_count is not None:
         NATIVE_CONVERSATION_COUNT = args.native_conversation_count

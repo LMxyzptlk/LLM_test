@@ -97,7 +97,20 @@ performance-n.cfg    Performance native 原生多轮压测配置
   "dataset_types": ["sharegpt"],
   "raw_gsm_path": "",
   "raw_sharegpt_path": "",
-  "raw_swebench_path": ""
+  "raw_swebench_path": "",
+
+  // 压测前预热（详见 6. 预热）
+  "warmup": {
+    "enabled": false,
+    "rounds": 2,
+    "requests": 0,
+    "concurrency": 0,
+    "max_out_len": 0,
+    "timeout": 600,
+    "sleep": 2.0,
+    "reuse_prompts": false
+  },
+  "ais_num_warmups": 1
 }
 ```
 
@@ -116,7 +129,18 @@ performance-n.cfg    Performance native 原生多轮压测配置
   "generation_kwargs": {
     "temperature": 0.01,
     "ignore_eos": false
-  }
+  },
+  "warmup": {
+    "enabled": false,
+    "rounds": 2,
+    "requests": 0,
+    "concurrency": 0,
+    "max_out_len": 0,
+    "timeout": 600,
+    "sleep": 2.0,
+    "reuse_prompts": false
+  },
+  "ais_num_warmups": 1
 }
 ```
 
@@ -457,8 +481,54 @@ outputs/agent_configs/  # agent 自动生成的 ais_bench 配置
 raw_datasets/           # 自动下载的原始数据
 ```
 
-## 5. 版本
+## 5. 预热
 
+`performance-c` / `performance-n` 支持在正式压测前预热，目的是把冷启动的影响挡在统计之外。
+
+**默认关闭**（`warmup.enabled: false`），保持和之前一样的冷跑口径；需要时把它改成 `true`。
+
+- ais_bench 自带的 `--num-warmups` 默认只发 **1 条**请求、而且是顺序发送，请求数少的用例里首条冷请求对均值影响很大
+- 内置预热会按**本用例的并发数和输出长度**打 `rounds` 轮，每轮 `并发` 条请求并发发出，预热完成后再等 `sleep` 秒让服务侧队列收敛
+
+```jsonc
+"warmup": {
+  "enabled": false,     // 总开关，默认关闭
+  "rounds": 2,          // 预热轮数
+  "requests": 0,        // 覆盖总请求数；0 = rounds * 并发
+  "concurrency": 0,     // 0 = 跟随用例并发
+  "max_out_len": 0,     // 0 = 跟随用例输出长度
+  "timeout": 600,       // 单条预热请求超时（秒）
+  "sleep": 2.0,         // 预热后等待秒数
+  "reuse_prompts": false
+}
+```
+
+`reuse_prompts=false`（默认）会给预热 prompt 加随机后缀。原因是预热如果直接复用语料里的 prompt，服务端会把这段前缀缓存写进去，正式压测时这些题就变成缓存命中，指标会偏乐观。加上后缀后 prompt 长度基本不变，但前缀不可复用，只起到「把服务和图跑热」的作用。如果想复现 ais_bench 原有行为，把它设为 `true`。
+
+预热日志示例：
+
+```text
+  [warm] ShareGPT-in16384-bs32-8并发 预热: 16 请求 / 2 轮, 并发 8, 输出上限 1024 tokens
+  [warm] 第 1/2 轮: 8/8 成功, 平均 12.41s, TTFT 1.83s
+  [warm] 第 2/2 轮: 8/8 成功, 平均 4.06s, TTFT 1.79s
+  [warm] 冷热差: 首轮 12.41s -> 末轮 4.06s (3.1x)
+  [warm] 等待 2.0s 让服务侧队列收敛
+```
+
+命令行覆盖：
+
+```bash
+python3 run_perf.py --mode performance-c --warmup-rounds 4      # 加长预热
+python3 run_perf.py --mode performance-c --warmup-concurrency 32 # 预热并发另设
+python3 run_perf.py --mode performance-c --no-warmup            # 关闭内置预热
+python3 run_perf.py --mode performance-c --ais-num-warmups 0     # 只保留内置预热
+```
+
+预热失败只告警、不中断压测；`--skip-run` 时不会预热。`performance-vl` 走 evalscope perf，目前没有接入这套预热。
+
+## 6. 版本
+
+- v1.6.1：完善性能测试预热，按用例并发预热多轮，新增 warmup 配置与冷热差输出
 - v1.6.0：新增 LiveCodeBench 代码生成精度模式，支持按难度筛选，题库自动下载
 - v1.5.2：VLM 精度默认数据集改为 MMMU-Pro，支持 4 选项 / 10 选项 / vision
 - v1.5.1：新增 VLM 多模态性能压测模式（random_vl）
