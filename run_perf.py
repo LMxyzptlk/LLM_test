@@ -1853,6 +1853,9 @@ def generate_dataset(dataset_type, input_len, concurrency, pfx=None):
         "--modelpath", model_path,
     ]
 
+    # 先确保数据集目录存在，后面 GSM 软链和 process_dataset 都依赖它
+    os.makedirs(DATASET_DIR, exist_ok=True)
+
     # 数据集类型特有参数
     if dataset_type == "gsm":
         # GSM 数据路径硬编码在 process_dataset.py 中为 ./GSM8K.jsonl
@@ -1874,7 +1877,6 @@ def generate_dataset(dataset_type, input_len, concurrency, pfx=None):
     if pfx:
         cmd += ["--mode", "prefix", "--prefix_ratio", str(pfx / 100.0)]
 
-    os.makedirs(DATASET_DIR, exist_ok=True)
     print("  [gen] 自动生成数据集: {}".format(ds_name))
     print("  [gen] CMD: {}".format(" ".join(str(x) for x in cmd)))
     proc = subprocess.run(
