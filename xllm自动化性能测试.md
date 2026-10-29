@@ -2,13 +2,14 @@
 
 ## 1. 配置文件
 
-配置已拆分为一个公共文件和六个模式专属文件：
+配置已拆分为一个公共文件和七个模式专属文件：
 
 ```text
 cfg-normal.cfg       公共配置
 agent.cfg            Agent 模式专属配置
 accuracy.cfg         Accuracy 模式专属配置
 vlm.cfg              VLM 多模态精度模式专属配置
+lcb.cfg              LiveCodeBench 代码生成精度模式专属配置
 performance-vl.cfg   VLM 多模态性能压测模式专属配置
 performance-c.cfg    Performance concat 拼接压测配置
 performance-n.cfg    Performance native 原生多轮压测配置
@@ -149,7 +150,37 @@ performance-n.cfg    Performance native 原生多轮压测配置
 - `limit`：按子集生效；`0` 全量；整数为前 N 条；小数为百分比 `(0, 1]`
 - `work_dir`：evalscope 会在其下按时间戳建子目录
 
-### 1.7 `performance-vl.cfg`
+### 1.7 `lcb.cfg`
+
+```jsonc
+{
+  "data_file": "",            // 题库；空=脚本同级 test6.jsonl
+  "data_url": "https://hf-mirror.com/datasets/livecodebench/code_generation_lite/resolve/main/test6.jsonl",
+  "source_dir": "",           // LiveCodeBench 源码目录；空=脚本同级 LiveCodeBench-main
+  "difficulties": [],         // 空=全部 175 题；可选 easy / medium / hard 任意组合
+  "limit": 0,                 // 难度过滤后再取前 N 题，0=不限制
+  "concurrency": 8,
+  "max_tokens": 65536,
+  "temperature": 0.6,
+  "request_timeout": 1200,
+  "eval_timeout": 3600,
+  "max_retries": 10,
+  "retry_base_seconds": 30,
+  "retry_max_seconds": 300,
+  "work_dir": "outputs/lcb",
+  "result_dir": "results/lcb",
+  "auto_prepare": true
+}
+```
+
+- `data_file`：题库默认是脚本同级的 `test6.jsonl`，175 题（easy 43 / medium 52 / hard 80）
+- `data_url`：题库缺失时自动下载（hf-mirror 上 `livecodebench/code_generation_lite` 的同名文件，约 129MB）；留空或不设 `auto_prepare` 则不下载
+- `source_dir`：LiveCodeBench 源码目录，其下需要有 `lcb_runner/`
+- `difficulties`：留空跑全部；也可以写 `["easy", "medium"]`
+- `concurrency` / `request_timeout` / `eval_timeout`：并发、单题请求超时、单题判题超时
+- `auto_prepare`：缺少 `openai` / `datasets` 时自动 pip install
+
+### 1.8 `performance-vl.cfg`
 
 ```jsonc
 {
@@ -183,7 +214,7 @@ performance-n.cfg    Performance native 原生多轮压测配置
 
 ## 2. 运行模式
 
-支持六个直接模式：
+支持七个直接模式：
 
 ```text
 performance-c
@@ -192,6 +223,7 @@ performance-vl
 agent
 accuracy
 vlm
+lcb
 ```
 
 ### 2.1 Performance concat
@@ -242,7 +274,15 @@ python3 run_perf.py --mode performance-vl
 
 用于 evalscope 多模态性能压测，默认 `random_vl`。会按 `concurrencies` 依次压测，结束后打印各并发的吞吐、TTFT、TPOT、Latency，并把含 P99 的汇总写到 `results/performance/vl/`。
 
-### 2.7 混合运行
+### 2.7 LiveCodeBench 代码生成精度
+
+```bash
+python3 run_perf.py --mode lcb
+```
+
+用于 LiveCodeBench 代码生成精度测试，默认跑全部 175 道竞赛题。评测逻辑在独立的 `livecodebench_eval.py` 里，`run_perf.py` 只负责调起和汇总。结束后会打印 pass@1、分难度 / 分平台通过率以及 TTFT / TPOT / token 分布，并把汇总写到 `results/lcb/`。
+
+### 2.8 混合运行
 
 支持任意组合：
 
@@ -358,8 +398,42 @@ python3 run_perf.py \
 
 注意：`random_vl` 依赖 tokenizer 统计 prompt 长度，默认回退到公共 `model_cfg_params.path`；图片会以 base64 发送，带宽和显存占用随图片数量/尺寸增长。该模式依赖 `evalscope[perf]`，`auto_prepare=true` 时缺失会自动安装。
 
-### 3.7 预生成 performance-c 数据集
+### 3.7 LiveCodeBench
 
+```bash
+# 全量 175 题（easy 43 / medium 52 / hard 80）
+python3 run_perf.py --mode lcb
+
+# 只跑 easy + medium
+python3 run_perf.py --mode lcb --lcb-difficulty easy medium
+
+# 冒烟：hard 里取前 5 题，并发 16
+python3 run_perf.py \
+  --mode lcb \
+  --lcb-difficulty hard \
+  --lcb-limit 5 \
+  --lcb-concurrency 16
+
+# 断点续跑：指回上次的结果目录，只补没跑完的题
+python3 run_perf.py --mode lcb --lcb-output-dir outputs/lcb/20261029_195525
+
+# 连带重跑上次请求失败的题
+python3 run_perf.py --mode lcb \
+  --lcb-output-dir outputs/lcb/20261029_195525 \
+  --lcb-reset-failed
+
+# 题库 / 源码不在脚本同级时显式指定
+python3 run_perf.py --mode lcb \
+  --lcb-data-file /data/lcb/test6.jsonl \
+  --lcb-source-dir /opt/LiveCodeBench
+
+# 禁掉自动下载（题库必须已存在）
+python3 run_perf.py --mode lcb --lcb-data-url ""
+```
+
+注意：题库（约 129MB）不存在时会自动从 `lcb.data_url` 下载，已有文件不再重复下载。判题会在本机执行模型生成的代码，需要 LiveCodeBench 的判题依赖齐全；单题请求超时和判题超时分别由 `request_timeout` / `eval_timeout` 控制。
+
+### 3.8 预生成 performance-c 数据集
 ```bash
 python3 gen_datasets.py --dry-run
 python3 gen_datasets.py
@@ -377,12 +451,15 @@ outputs/accuracy/       # accuracy 输出
 outputs/vlm/{timestamp}/ # vlm 输出（含 vlm_summary.json / vlm_summary.csv）
 outputs/performance/vl/{timestamp}/ # performance-vl 压测输出
 results/performance/vl/ # performance-vl 汇总 CSV / JSON
+outputs/lcb/{timestamp}/ # lcb 输出（state/raw/predictions/evaluation/summary/report）
+results/lcb/            # lcb 汇总 CSV / JSON
 outputs/agent_configs/  # agent 自动生成的 ais_bench 配置
 raw_datasets/           # 自动下载的原始数据
 ```
 
 ## 5. 版本
 
+- v1.6.0：新增 LiveCodeBench 代码生成精度模式，支持按难度筛选，题库自动下载
 - v1.5.2：VLM 精度默认数据集改为 MMMU-Pro，支持 4 选项 / 10 选项 / vision
 - v1.5.1：新增 VLM 多模态性能压测模式（random_vl）
 - v1.5.0：新增 VLM 多模态精度模式（MMMU）

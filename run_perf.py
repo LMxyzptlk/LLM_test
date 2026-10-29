@@ -22,6 +22,9 @@ ais_bench 自动性能测试脚本 (JSON 用例驱动)
     # performance-vl 模式: 跑 evalscope 多模态性能压测, 默认 random_vl
     python3 run_perf.py --mode performance-vl
 
+    # lcb 模式: 跑 LiveCodeBench 代码生成精度测试, 可按难度筛选
+    python3 run_perf.py --mode lcb --lcb-difficulty easy medium
+
     # performance-c 简易模式
     python3 run_perf.py --mode performance-c -i 32768 -c 1 8 16 --max-out-len 1024 --request-rate 0.5
     python3 run_perf.py --mode performance-c -i 32768 -c 1 8 16 --dataset-type gsm sharegpt
@@ -80,6 +83,8 @@ CFG_NORMAL_PATH = os.path.join(SCRIPT_DIR, "cfg-normal.cfg")
 AGENT_CFG_PATH = os.path.join(SCRIPT_DIR, "agent.cfg")
 ACCURACY_CFG_PATH = os.path.join(SCRIPT_DIR, "accuracy.cfg")
 VLM_CFG_PATH = os.path.join(SCRIPT_DIR, "vlm.cfg")
+LCB_CFG_PATH = os.path.join(SCRIPT_DIR, "lcb.cfg")
+LCB_EVAL_SCRIPT = os.path.join(SCRIPT_DIR, "livecodebench_eval.py")
 PERFORMANCE_VL_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-vl.cfg")
 PERFORMANCE_C_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-c.cfg")
 PERFORMANCE_N_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-n.cfg")
@@ -147,7 +152,7 @@ def _strip_jsonc_comments(text):
     return "".join(out)
 
 
-_SUPPORTED_MODES = ("performance-c", "performance-n", "performance-vl", "agent", "accuracy", "vlm")
+_SUPPORTED_MODES = ("performance-c", "performance-n", "performance-vl", "agent", "accuracy", "vlm", "lcb")
 
 
 def _parse_mode_list(value, source="mode"):
@@ -203,6 +208,7 @@ def _load_cfg():
     agent = _load_jsonc_file(AGENT_CFG_PATH)
     accuracy = _load_jsonc_file(ACCURACY_CFG_PATH)
     vlm = _load_jsonc_file(VLM_CFG_PATH)
+    lcb = _load_jsonc_file(LCB_CFG_PATH)
     performance_vl = _load_jsonc_file(PERFORMANCE_VL_CFG_PATH)
     performance_c = _load_jsonc_file(PERFORMANCE_C_CFG_PATH)
     performance_n = _load_jsonc_file(PERFORMANCE_N_CFG_PATH)
@@ -222,6 +228,12 @@ def _load_cfg():
         "dataset", "dataset_format", "dataset_hub", "subset_list", "limit", "repeats",
         "eval_batch_size", "work_dir", "generation_config", "dataset_args",
         "model_cfg_params",
+    }
+    allowed_lcb_keys = {
+        "data_file", "data_url", "source_dir", "difficulties", "limit", "concurrency",
+        "max_tokens", "temperature", "request_timeout", "eval_timeout",
+        "max_retries", "retry_base_seconds", "retry_max_seconds",
+        "work_dir", "result_dir", "auto_prepare", "model_cfg_params",
     }
     allowed_performance_c_keys = {
         "dataset_dir", "result_dir", "input_len", "concurrencies",
@@ -245,6 +257,7 @@ def _load_cfg():
     _check_cfg_keys(agent, allowed_agent_keys, "agent.cfg")
     _check_cfg_keys(accuracy, allowed_accuracy_keys, "accuracy.cfg")
     _check_cfg_keys(vlm, allowed_vlm_keys, "vlm.cfg")
+    _check_cfg_keys(lcb, allowed_lcb_keys, "lcb.cfg")
     _check_cfg_keys(performance_vl, allowed_performance_vl_keys, "performance-vl.cfg")
     _check_cfg_keys(performance_c, allowed_performance_c_keys, "performance-c.cfg")
     _check_cfg_keys(performance_n, allowed_performance_n_keys, "performance-n.cfg")
@@ -259,6 +272,7 @@ def _load_cfg():
         "agent": _deep_merge(common_without_mode, agent),
         "accuracy": _deep_merge(common_without_mode, accuracy),
         "vlm": _deep_merge(common_without_mode, vlm),
+        "lcb": _deep_merge(common_without_mode, lcb),
         "performance-vl": _deep_merge(common_without_mode, performance_vl),
         "performance": performance,
     }
@@ -272,6 +286,7 @@ _AGENT_CFG = _cfg.get("agent", {})
 _PERFORMANCE_CFG = _cfg.get("performance", {})
 _ACCURACY_CFG = _cfg.get("accuracy", {})
 _VLM_CFG = _cfg.get("vlm", {})
+_LCB_CFG = _cfg.get("lcb", {})
 _PERFORMANCE_VL_CFG = _cfg.get("performance-vl", {})
 
 # Agent 模式配置
@@ -371,6 +386,28 @@ VLM_DATASET_ARGS = _VLM_CFG.get("dataset_args", {})
 VLM_DATASET_FORMAT = _VLM_CFG.get("dataset_format", "")
 MMMU_PRO_DATASET_FORMATS = ["standard (4 options)", "standard (10 options)", "vision"]
 
+# LiveCodeBench 代码生成精度测试配置
+LCB_DATA_FILE = _LCB_CFG.get("data_file", "")
+LCB_DATA_URL = _LCB_CFG.get("data_url", "")
+LCB_SOURCE_DIR = _LCB_CFG.get("source_dir", "")
+LCB_DIFFICULTIES = list(_LCB_CFG.get("difficulties", []) or [])
+LCB_LIMIT = int(_LCB_CFG.get("limit", 0))
+LCB_CONCURRENCY = int(_LCB_CFG.get("concurrency", 8))
+LCB_MAX_TOKENS = int(_LCB_CFG.get("max_tokens", 65536))
+LCB_TEMPERATURE = float(_LCB_CFG.get("temperature", 0.6))
+LCB_REQUEST_TIMEOUT = int(_LCB_CFG.get("request_timeout", 1200))
+LCB_EVAL_TIMEOUT = int(_LCB_CFG.get("eval_timeout", 3600))
+LCB_MAX_RETRIES = int(_LCB_CFG.get("max_retries", 10))
+LCB_RETRY_BASE_SECONDS = int(_LCB_CFG.get("retry_base_seconds", 30))
+LCB_RETRY_MAX_SECONDS = int(_LCB_CFG.get("retry_max_seconds", 300))
+LCB_WORK_DIR = _LCB_CFG.get("work_dir", "outputs/lcb")
+LCB_RESULT_DIR = _LCB_CFG.get("result_dir", "results/lcb")
+LCB_AUTO_PREPARE = bool(_LCB_CFG.get("auto_prepare", True))
+LCB_OUTPUT_DIR = ""
+LCB_RESET_FAILED = False
+_LCB_MODEL_CFG_PARAMS = dict(_LCB_CFG.get("model_cfg_params", {}))
+LCB_DIFFICULTY_CHOICES = ("easy", "medium", "hard")
+
 # Performance VL 多模态性能压测配置
 PERF_VL_DATASET = _PERFORMANCE_VL_CFG.get("dataset", "random_vl")
 PERF_VL_CONCURRENCIES = _PERFORMANCE_VL_CFG.get("concurrencies", [1, 8, 16, 32])
@@ -439,6 +476,7 @@ def _model_cfg_for_mode(mode):
         "agent": _AGENT_MODEL_CFG_PARAMS,
         "accuracy": _ACCURACY_MODEL_CFG_PARAMS,
         "vlm": _VLM_MODEL_CFG_PARAMS,
+        "lcb": _LCB_MODEL_CFG_PARAMS,
         "performance-vl": _PERFORMANCE_VL_MODEL_CFG_PARAMS,
         "performance-c": _PERFORMANCE_MODEL_CFG_PARAMS,
         "performance-n": _PERFORMANCE_MODEL_CFG_PARAMS,
@@ -975,6 +1013,301 @@ def run_accuracy_mode():
     print("  [accuracy] CMD: {}".format(" ".join(cmd)))
     _run_checked(cmd, cwd=work_dir, label="evalscope accuracy")
     print("  [accuracy] 精度测试完成")
+
+
+# -------------------- LCB 模式: LiveCodeBench 代码生成精度测试 --------------------
+def _resolve_lcb_path(value, default_name):
+    """解析 lcb 配置里的路径；空值回退到脚本同级目录。"""
+    if value:
+        return value if os.path.isabs(value) else os.path.join(SCRIPT_DIR, value)
+    return os.path.join(SCRIPT_DIR, default_name)
+
+
+def _validate_lcb_difficulties(values):
+    """校验难度组合，去重并保持顺序。"""
+    if not values:
+        return []
+    normalized = []
+    for item in values:
+        text = str(item).strip().lower()
+        if not text:
+            continue
+        if text not in LCB_DIFFICULTY_CHOICES:
+            raise RuntimeError(
+                "未知的难度: {}；可选: {}".format(
+                    item, ", ".join(LCB_DIFFICULTY_CHOICES)
+                )
+            )
+        if text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _ensure_lcb_dependencies(auto_prepare, source_dir):
+    """检查 LiveCodeBench 运行依赖，缺失时按配置自动安装。"""
+    if not os.path.isdir(os.path.join(source_dir, "lcb_runner")):
+        raise RuntimeError(
+            "找不到 LiveCodeBench 源码目录: {}\n"
+            "该目录下应有 lcb_runner/；请用 lcb.source_dir 或 --lcb-source-dir 指定".format(
+                source_dir
+            )
+        )
+
+    probe = [sys.executable, "-c", "import openai, datasets"]
+    proc = subprocess.run(probe, text=True, capture_output=True)
+    if proc.returncode == 0:
+        print("  [lcb] 依赖已就绪")
+        return
+
+    if not auto_prepare:
+        raise RuntimeError(
+            "缺少 LiveCodeBench 依赖（openai / datasets），且 lcb.auto_prepare=false\n{}".format(
+                (proc.stderr or "").strip()
+            )
+        )
+    print("  [lcb] 缺少依赖，开始安装 openai / datasets")
+    _run_checked(
+        [sys.executable, "-m", "pip", "install", "openai", "datasets"],
+        cwd=SCRIPT_DIR,
+        label="pip install openai datasets",
+    )
+
+
+def _write_lcb_summary(rows, summary, result_dir):
+    """把整体 / 分难度 / 分平台结果写成 CSV 和 JSON。"""
+    os.makedirs(result_dir, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    csv_path = os.path.join(result_dir, "lcb_{}.csv".format(stamp))
+    json_path = os.path.join(result_dir, "lcb_{}.json".format(stamp))
+
+    fields = ["scope", "name", "passed", "total", "pass_at_1"]
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(fields)
+        for row in rows:
+            writer.writerow([row.get(field, "") for field in fields])
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({"rows": rows, "summary": summary}, f, indent=2, ensure_ascii=False)
+
+    print("  [lcb] 汇总已写入: {} , {}".format(csv_path, json_path))
+
+
+def _check_lcb_data_file(path):
+    """题库只做最小校验：至少有一行能解析成 JSON。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    json.loads(line)
+                    return
+    except Exception as exc:
+        raise RuntimeError(
+            "题库文件无法解析: {}\n{}\n"
+            "可以删掉该文件让脚本重新下载，或用 --lcb-data-file 指定其它题库".format(
+                path, exc
+            )
+        )
+    raise RuntimeError("题库文件为空: {}".format(path))
+
+
+def _ensure_lcb_data_file(data_file, data_url, auto_prepare):
+    """题库不存在时按配置自动下载。"""
+    if os.path.isfile(data_file) and os.path.getsize(data_file) > 0:
+        _check_lcb_data_file(data_file)
+        return data_file
+
+    if not data_url:
+        raise RuntimeError(
+            "找不到题库文件: {}\n"
+            "请用 lcb.data_file / --lcb-data-file 指定，"
+            "或配置 lcb.data_url 自动下载".format(data_file)
+        )
+    if not auto_prepare:
+        raise RuntimeError(
+            "找不到题库文件: {}，且 lcb.auto_prepare=false".format(data_file)
+        )
+
+    print("  [lcb] 题库不存在，开始下载（约 129MB）: {}".format(data_url))
+    _download_file(data_url, data_file)
+    _check_lcb_data_file(data_file)
+    print("  [lcb] 题库就绪: {}".format(data_file))
+    return data_file
+
+
+def run_lcb_mode():
+    """执行 LiveCodeBench 代码生成精度测试。
+
+    评测逻辑在独立的 livecodebench_eval.py 里，这里只负责拼参数、
+    调起子进程并汇总结果。
+    """
+    print("========== LCB 模式: LiveCodeBench 代码生成精度测试 ==========")
+    if not os.path.isfile(LCB_EVAL_SCRIPT):
+        raise RuntimeError("找不到评测脚本: {}".format(LCB_EVAL_SCRIPT))
+
+    data_file = _resolve_lcb_path(LCB_DATA_FILE, "test6.jsonl")
+    source_dir = _resolve_lcb_path(LCB_SOURCE_DIR, "LiveCodeBench-main")
+    data_file = _ensure_lcb_data_file(data_file, LCB_DATA_URL, LCB_AUTO_PREPARE)
+
+    difficulties = _validate_lcb_difficulties(LCB_DIFFICULTIES)
+    model_name = MODEL_CFG_PARAMS.get("model", "")
+    host_ip = MODEL_CFG_PARAMS.get("host_ip", "")
+    host_port = MODEL_CFG_PARAMS.get("host_port", "")
+    api_key = MODEL_CFG_PARAMS.get("api_key", "EMPTY") or "EMPTY"
+    if not model_name or not host_ip or not host_port:
+        raise RuntimeError(
+            "lcb 模式需要在 lcb.model_cfg_params 里配置 model / host_ip / host_port"
+        )
+    api_url = "http://{}:{}/v1".format(host_ip, host_port)
+
+    if LCB_OUTPUT_DIR:
+        output_dir = (
+            LCB_OUTPUT_DIR
+            if os.path.isabs(LCB_OUTPUT_DIR)
+            else os.path.join(SCRIPT_DIR, LCB_OUTPUT_DIR)
+        )
+    else:
+        work_dir = (
+            LCB_WORK_DIR
+            if os.path.isabs(LCB_WORK_DIR)
+            else os.path.join(SCRIPT_DIR, LCB_WORK_DIR)
+        )
+        output_dir = os.path.join(work_dir, time.strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(output_dir, exist_ok=True)
+
+    print("题库 = {}".format(data_file))
+    print("源码目录 = {}".format(source_dir))
+    print("难度 = {}".format(", ".join(difficulties) if difficulties else "全部"))
+    print("模型 = {} @ {}".format(model_name, api_url))
+    print("并发 = {}".format(LCB_CONCURRENCY))
+    print("max_tokens = {}, temperature = {}".format(LCB_MAX_TOKENS, LCB_TEMPERATURE))
+    print("输出目录 = {}".format(output_dir))
+
+    _ensure_lcb_dependencies(LCB_AUTO_PREPARE, source_dir)
+
+    cmd = [
+        sys.executable,
+        LCB_EVAL_SCRIPT,
+        "--source-dir", source_dir,
+        "--data-file", data_file,
+        "--base-url", api_url,
+        "--model", model_name,
+        "--api-key", api_key,
+        "--concurrency", str(LCB_CONCURRENCY),
+        "--max-tokens", str(LCB_MAX_TOKENS),
+        "--temperature", str(LCB_TEMPERATURE),
+        "--request-timeout", str(LCB_REQUEST_TIMEOUT),
+        "--eval-timeout", str(LCB_EVAL_TIMEOUT),
+        "--max-retries", str(LCB_MAX_RETRIES),
+        "--retry-base-seconds", str(LCB_RETRY_BASE_SECONDS),
+        "--retry-max-seconds", str(LCB_RETRY_MAX_SECONDS),
+        "--output-dir", output_dir,
+    ]
+    if difficulties:
+        cmd.extend(["--difficulties"] + difficulties)
+    if LCB_LIMIT:
+        cmd.extend(["--limit", str(LCB_LIMIT)])
+    if LCB_RESET_FAILED:
+        cmd.append("--reset-failed")
+
+    _run_checked(cmd, cwd=SCRIPT_DIR, label="LiveCodeBench 评测")
+
+    summary_path = os.path.join(output_dir, "summary.json")
+    if not os.path.isfile(summary_path):
+        raise RuntimeError("评测结束但没找到 summary.json: {}".format(summary_path))
+    with open(summary_path, "r", encoding="utf-8") as f:
+        summary = json.load(f)
+
+    accuracy = (summary.get("metrics") or {}).get("accuracy") or {}
+    if not (summary.get("evaluation") or {}).get("success", True):
+        print(
+            "  [lcb] 警告: 判题失败 - {}".format(
+                (summary.get("evaluation") or {}).get("error", "")
+            )
+        )
+
+    print("")
+    print("---------- LiveCodeBench 汇总 ----------")
+    print(
+        "pass@1 = {:.6f}  ({}/{})".format(
+            accuracy.get("pass_at_1", 0.0),
+            accuracy.get("passed", 0),
+            accuracy.get("total", 0),
+        )
+    )
+    print(
+        "代码解析率 = {:.6f}  ({}/{})".format(
+            accuracy.get("parsed_success_rate", 0.0),
+            accuracy.get("parsed", 0),
+            accuracy.get("total", 0),
+        )
+    )
+    for name in LCB_DIFFICULTY_CHOICES:
+        group = (accuracy.get("by_difficulty") or {}).get(name)
+        if not group:
+            continue
+        print(
+            "  难度 {}: {}/{}  pass@1={:.6f}".format(
+                name, group.get("passed", 0), group.get("total", 0),
+                group.get("pass_at_1", 0.0),
+            )
+        )
+    for name, group in sorted((accuracy.get("by_platform") or {}).items()):
+        print(
+            "  平台 {}: {}/{}  pass@1={:.6f}".format(
+                name, group.get("passed", 0), group.get("total", 0),
+                group.get("pass_at_1", 0.0),
+            )
+        )
+    for key, label in (
+        ("prompt_tokens", "输入 token"),
+        ("completion_tokens", "输出 token"),
+        ("ttft_seconds", "TTFT"),
+        ("tpot_seconds", "TPOT"),
+        ("elapsed_seconds", "总耗时"),
+    ):
+        dist = (summary.get("metrics") or {}).get(key) or {}
+        if not dist.get("count"):
+            continue
+        print(
+            "  {}: mean={:.2f} p50={:.2f} p99={:.2f} max={:.2f}".format(
+                label, dist.get("mean") or 0.0, dist.get("p50") or 0.0,
+                dist.get("p99") or 0.0, dist.get("max") or 0.0,
+            )
+        )
+    if summary.get("errors"):
+        print(
+            "  错误: {}".format(
+                ", ".join(
+                    "{}={}".format(k, v)
+                    for k, v in sorted(summary["errors"].items())
+                )
+            )
+        )
+
+    rows = [{
+        "scope": "overall",
+        "name": "all",
+        "passed": accuracy.get("passed", 0),
+        "total": accuracy.get("total", 0),
+        "pass_at_1": accuracy.get("pass_at_1", 0.0),
+    }]
+    for scope, key in (("difficulty", "by_difficulty"), ("platform", "by_platform")):
+        for name, group in sorted((accuracy.get(key) or {}).items()):
+            rows.append({
+                "scope": scope,
+                "name": name,
+                "passed": group.get("passed", 0),
+                "total": group.get("total", 0),
+                "pass_at_1": group.get("pass_at_1", 0.0),
+            })
+
+    result_dir = (
+        LCB_RESULT_DIR
+        if os.path.isabs(LCB_RESULT_DIR)
+        else os.path.join(SCRIPT_DIR, LCB_RESULT_DIR)
+    )
+    _write_lcb_summary(rows, summary, result_dir)
+    print("  [lcb] 完整结果: {}".format(output_dir))
 
 
 # -------------------- VLM 模式: evalscope 多模态精度测试 --------------------
@@ -2702,7 +3035,7 @@ def _apply_mode_overrides(args, mode):
         MODEL_CFG_PARAMS["host_ip"] = args.host_ip
     if args.host_port is not None:
         MODEL_CFG_PARAMS["host_port"] = args.host_port
-    if args.api_key and mode in ("agent", "accuracy", "vlm", "performance-vl", "performance-n"):
+    if args.api_key and mode in ("agent", "accuracy", "vlm", "lcb", "performance-vl", "performance-n"):
         MODEL_CFG_PARAMS["api_key"] = args.api_key
     if args.path and mode in ("performance-c", "performance-n", "performance-vl"):
         MODEL_CFG_PARAMS["path"] = args.path
@@ -2728,7 +3061,7 @@ def main():
         action="extend",
         default=None,
         help=(
-            "运行模式，支持 performance-c / performance-n / performance-vl / agent / accuracy / vlm 任意组合；"
+            "运行模式，支持 performance-c / performance-n / performance-vl / agent / accuracy / vlm / lcb 任意组合；"
             "可写 --mode agent performance-c，也可写 --mode agent,performance-c"
         ),
     )
@@ -2760,6 +3093,26 @@ def main():
                     help="vlm 模式: eval-batch-size，默认 vlm.eval_batch_size")
     ap.add_argument("--vlm-work-dir", default=None,
                     help="vlm 模式: 输出目录，默认 vlm.work_dir")
+    ap.add_argument("--lcb-difficulty", nargs="+", choices=list(LCB_DIFFICULTY_CHOICES), default=None,
+                    help="lcb 模式: 只评测指定难度 (easy/medium/hard 任意组合)，默认 lcb.difficulties (空=全部)")
+    ap.add_argument("--lcb-limit", type=int, default=None,
+                    help="lcb 模式: 难度过滤后再取前 N 题，0=不限制；默认 lcb.limit")
+    ap.add_argument("--lcb-concurrency", type=int, default=None,
+                    help="lcb 模式: 并发请求数，默认 lcb.concurrency")
+    ap.add_argument("--lcb-max-tokens", type=int, default=None,
+                    help="lcb 模式: 单题最大生成 token 数，默认 lcb.max_tokens")
+    ap.add_argument("--lcb-temperature", type=float, default=None,
+                    help="lcb 模式: 采样温度，默认 lcb.temperature")
+    ap.add_argument("--lcb-data-file", default=None,
+                    help="lcb 模式: 题库文件，默认 lcb.data_file (空=脚本同级 test6.jsonl)")
+    ap.add_argument("--lcb-data-url", default=None,
+                    help="lcb 模式: 题库下载地址，缺失时自动下载；默认 lcb.data_url，传空串禁用")
+    ap.add_argument("--lcb-source-dir", default=None,
+                    help="lcb 模式: LiveCodeBench 源码目录，默认 lcb.source_dir")
+    ap.add_argument("--lcb-output-dir", default=None,
+                    help="lcb 模式: 结果目录；指定已有的目录即为断点续跑，默认按时间戳新建")
+    ap.add_argument("--lcb-reset-failed", action="store_true",
+                    help="lcb 模式: 重跑上次请求失败的题目")
     ap.add_argument("--perf-vl-dataset", default=None,
                     help="performance-vl 模式: evalscope perf 数据集，默认 random_vl")
     ap.add_argument("--perf-vl-concurrency", type=int, nargs="+", default=None,
@@ -2835,6 +3188,8 @@ def main():
     global ACCURACY_DATASET, ACCURACY_EVAL_BATCH_SIZE, ACCURACY_WORK_DIR
     global VLM_DATASET, VLM_DATASET_HUB, VLM_DATASET_FORMAT, VLM_SUBSET_LIST, VLM_LIMIT, VLM_REPEATS
     global VLM_EVAL_BATCH_SIZE, VLM_WORK_DIR
+    global LCB_DATA_FILE, LCB_SOURCE_DIR, LCB_DIFFICULTIES, LCB_LIMIT, LCB_CONCURRENCY
+    global LCB_MAX_TOKENS, LCB_TEMPERATURE, LCB_OUTPUT_DIR, LCB_RESET_FAILED, LCB_DATA_URL
     global PERF_VL_DATASET, PERF_VL_CONCURRENCIES, PERF_VL_NUMBER
     global PERF_VL_MAX_OUT_LEN, PERF_VL_MIN_OUT_LEN
     global PERF_VL_MIN_PROMPT_LENGTH, PERF_VL_MAX_PROMPT_LENGTH, PERF_VL_PREFIX_LENGTH
@@ -2892,6 +3247,27 @@ def main():
     if args.vlm_work_dir:
         VLM_WORK_DIR = args.vlm_work_dir
 
+    if args.lcb_difficulty:
+        LCB_DIFFICULTIES = list(args.lcb_difficulty)
+    if args.lcb_limit is not None:
+        LCB_LIMIT = args.lcb_limit
+    if args.lcb_concurrency is not None:
+        LCB_CONCURRENCY = args.lcb_concurrency
+    if args.lcb_max_tokens is not None:
+        LCB_MAX_TOKENS = args.lcb_max_tokens
+    if args.lcb_temperature is not None:
+        LCB_TEMPERATURE = args.lcb_temperature
+    if args.lcb_data_file:
+        LCB_DATA_FILE = args.lcb_data_file
+    if args.lcb_data_url is not None:
+        LCB_DATA_URL = args.lcb_data_url
+    if args.lcb_source_dir:
+        LCB_SOURCE_DIR = args.lcb_source_dir
+    if args.lcb_output_dir:
+        LCB_OUTPUT_DIR = args.lcb_output_dir
+    if args.lcb_reset_failed:
+        LCB_RESET_FAILED = True
+
     if args.perf_vl_dataset:
         PERF_VL_DATASET = args.perf_vl_dataset
     if args.perf_vl_concurrency:
@@ -2947,6 +3323,8 @@ def main():
             run_accuracy_mode()
         elif mode == "vlm":
             run_vlm_mode()
+        elif mode == "lcb":
+            run_lcb_mode()
         elif mode == "performance-vl":
             run_performance_vl_mode()
         elif mode in ("performance-c", "performance-n"):

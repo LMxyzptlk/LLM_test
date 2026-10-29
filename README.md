@@ -2,6 +2,17 @@
 
 ## 版本历史
 
+### v1.6.0 — 2026-10-29
+
+- **新增 LiveCodeBench 代码生成精度测试模式**
+  - `--mode lcb`，评测 175 道竞赛题（easy 43 / medium 52 / hard 80）
+  - 支持按难度筛选：`--lcb-difficulty easy medium`（任意组合，不传=全部）
+  - 评测逻辑独立在 `livecodebench_eval.py`，`run_perf.py` 只负责调起和汇总
+  - 新增 `lcb.cfg`：题库/源码目录、难度、并发、输出长度、超时和重试
+  - 题库缺失时按 `data_url` 自动下载（hf-mirror，约 129MB），无需手动准备
+  - 支持断点续跑（`--lcb-output-dir` 指向已有目录）和 `--lcb-reset-failed` 重跑失败题
+  - 汇总 pass@1、分难度、分平台和各阶段耗时到 `results/lcb/`
+
 ### v1.5.2 — 2026-10-29
 
 - **VLM 精度测试默认数据集从 MMMU 改为 MMMU-Pro**
@@ -78,6 +89,8 @@
 | `agent.cfg` | Agent 模式专属配置 |
 | `accuracy.cfg` | Accuracy 模式专属配置 |
 | `vlm.cfg` | VLM 多模态精度模式专属配置 |
+| `lcb.cfg` | LiveCodeBench 代码生成精度模式专属配置 |
+| `livecodebench_eval.py` | LiveCodeBench 评测脚本（供 `--mode lcb` 调用，也可单独运行） |
 | `performance-vl.cfg` | VLM 多模态性能压测模式专属配置 |
 | `performance-c.cfg` | Performance concat 拼接压测配置 |
 | `performance-n.cfg` | Performance native 原生多轮压测配置 |
@@ -114,11 +127,16 @@ python3 run_perf.py --mode vlm --vlm-dataset-format "standard (10 options)"
 python3 run_perf.py --mode performance-vl
 python3 run_perf.py --mode performance-vl --perf-vl-concurrency 1 8 --perf-vl-number 50
 
-# 8. 混合运行
+# 8. LCB：LiveCodeBench 代码生成精度测试
+python3 run_perf.py --mode lcb
+python3 run_perf.py --mode lcb --lcb-difficulty easy medium
+python3 run_perf.py --mode lcb --lcb-difficulty hard --lcb-concurrency 16
+
+# 9. 混合运行
 python3 run_perf.py --mode agent performance-c accuracy vlm
 python3 run_perf.py --mode performance-n,accuracy
 
-# 9. 可选：预生成 performance-c 数据集
+# 10. 可选：预生成 performance-c 数据集
 python3 gen_datasets.py --dry-run
 python3 gen_datasets.py
 ```
@@ -266,6 +284,36 @@ VLM 多模态性能压测模式专属配置：
 
 Performance VL 依赖 `evalscope[perf]`；缺失且 `auto_prepare=true` 时会自动执行 `pip install evalscope[perf]`。
 
+### `lcb.cfg`
+
+LiveCodeBench 代码生成精度模式专属配置：
+
+```jsonc
+{
+  "data_file": "",            // 题库；空=脚本同级 test6.jsonl
+  "data_url": "https://hf-mirror.com/datasets/livecodebench/code_generation_lite/resolve/main/test6.jsonl",
+                              // 题库缺失时自动下载；留空=不下载
+  "source_dir": "",           // LiveCodeBench 源码目录；空=脚本同级 LiveCodeBench-main
+  "difficulties": [],         // 空=全部 175 题；可选 easy / medium / hard 任意组合
+  "limit": 0,                 // 难度过滤后再取前 N 题，0=不限制
+  "concurrency": 8,           // 并发请求数
+  "max_tokens": 65536,        // 单题最大生成 token 数
+  "temperature": 0.6,
+  "request_timeout": 1200,    // 单题请求超时（秒）
+  "eval_timeout": 3600,       // 单题判题超时（秒）
+  "max_retries": 10,
+  "retry_base_seconds": 30,
+  "retry_max_seconds": 300,
+  "work_dir": "outputs/lcb",  // 每次运行按时间戳建子目录
+  "result_dir": "results/lcb",// 汇总 CSV / JSON
+  "auto_prepare": true        // 缺 openai / datasets 时自动 pip install
+}
+```
+
+题库默认位于脚本同级的 `test6.jsonl`（175 题：easy 43 / medium 52 / hard 80），不存在时会按 `data_url` 自动下载（hf-mirror 上 `livecodebench/code_generation_lite` 的同名文件，约 129MB，`auto_prepare=false` 时不下载）。评测逻辑依赖 LiveCodeBench 源码目录（其下需有 `lcb_runner/`）；题库和源码目录都可用 `data_file` / `source_dir` 指到别处，或用 `--lcb-data-file` / `--lcb-source-dir` / `--lcb-data-url` 临时覆盖。
+
+结果目录里会有 `state.json`（逐题状态）、`raw.json`、`predictions.json`、`evaluation.json`、`summary.json` 和 `report.md`。想断点续跑就把 `--lcb-output-dir` 指回上次的目录；配合 `--lcb-reset-failed` 可以只重跑请求失败的题。
+
 ### `performance-c.cfg`
 
 Performance concat 拼接压测专属配置：
@@ -309,7 +357,7 @@ Performance native 原生多轮压测专属配置：
 
 ## Mode
 
-支持六个直接模式：
+支持七个直接模式：
 
 ```text
 performance-c
@@ -318,6 +366,7 @@ performance-vl
 agent
 accuracy
 vlm
+lcb
 ```
 
 也支持任意组合：
@@ -328,6 +377,7 @@ python3 run_perf.py --mode performance-n,accuracy
 python3 run_perf.py --mode accuracy --mode agent
 python3 run_perf.py --mode vlm --vlm-limit 10
 python3 run_perf.py --mode performance-vl
+python3 run_perf.py --mode lcb --lcb-difficulty easy
 ```
 
 配置文件里的 `mode` 也支持字符串或数组：
@@ -353,6 +403,8 @@ outputs/agent/          # agent 输出
 outputs/accuracy/       # accuracy 输出
 outputs/vlm/{timestamp}/ # vlm 输出（含 vlm_summary.json / vlm_summary.csv）
 outputs/performance/vl/{timestamp}/ # performance-vl 压测输出（evalscope perf）
+outputs/lcb/{timestamp}/ # lcb 输出（state/raw/predictions/evaluation/summary/report）
+results/lcb/            # lcb 汇总 CSV / JSON
 results/performance/vl/ # performance-vl 汇总 CSV / JSON
 outputs/agent_configs/  # agent 自动生成的 ais_bench 配置
 raw_datasets/           # 自动下载的原始数据
