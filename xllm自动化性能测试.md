@@ -123,7 +123,8 @@ performance-n.cfg    Performance native 原生多轮压测配置
 
 ```jsonc
 {
-  "dataset": "mmmu",
+  "dataset": "mmmu_pro",
+  "dataset_format": "standard (4 options)",
   "dataset_hub": "modelscope",
   "subset_list": [],
   "limit": 0,
@@ -141,7 +142,8 @@ performance-n.cfg    Performance native 原生多轮压测配置
 }
 ```
 
-- `dataset`：默认 `mmmu`，评测 MMMU validation split（30 个学科 / 900 题）
+- `dataset`：默认 `mmmu_pro`，评测 MMMU-Pro test split（30 个学科 / 1730 题）
+- `dataset_format`：MMMU-Pro 格式变体，`standard (4 options)` / `standard (10 options)` / `vision`
 - `dataset_hub`：`modelscope` 或 `huggingface`
 - `subset_list`：留空跑全部；可填 `Accounting`、`Art`、`Math` 等 30 个子集
 - `limit`：按子集生效；`0` 全量；整数为前 N 条；小数为百分比 `(0, 1]`
@@ -230,7 +232,7 @@ python3 run_perf.py --mode accuracy
 python3 run_perf.py --mode vlm
 ```
 
-用于 evalscope 多模态精度测试，默认 MMMU。评测完成后会打印总体 acc 和各子集 acc，并在评测目录下生成 `vlm_summary.json` / `vlm_summary.csv`。
+用于 evalscope 多模态精度测试，默认 MMMU-Pro。评测完成后会打印总体 acc 和各子集 acc，并在评测目录下生成 `vlm_summary.json` / `vlm_summary.csv`。
 
 ### 2.6 Performance VL
 
@@ -315,8 +317,11 @@ python3 run_perf.py \
 ### 3.5 VLM
 
 ```bash
-# 全量 MMMU
+# 全量 MMMU-Pro（默认 4 选项）
 python3 run_perf.py --mode vlm
+
+# 10 选项变体（更难）
+python3 run_perf.py --mode vlm --vlm-dataset-format "standard (10 options)"
 
 # 冒烟：只跑每个子集的前 10 题，并限制到 2 个子集
 python3 run_perf.py \
@@ -329,7 +334,7 @@ python3 run_perf.py \
 python3 run_perf.py --mode vlm --vlm-dataset-hub huggingface
 ```
 
-注意：被测 VLM 服务需要支持 OpenAI 兼容的多模态消息（`image_url` 传入 base64 data URL）。VLM 模式依赖 evalscope ≥ 1.6，首次评测会把 MMMU 数据集下载到 `~/.cache/modelscope/datasets`。
+注意：被测 VLM 服务需要支持 OpenAI 兼容的多模态消息（`image_url` 传入 base64 data URL）。VLM 模式依赖 evalscope ≥ 1.6，首次评测会把 MMMU-Pro（`AI-ModelScope/MMMU_Pro`）下载到 `~/.cache/modelscope/datasets`。
 
 ### 3.6 Performance VL
 
@@ -378,6 +383,7 @@ raw_datasets/           # 自动下载的原始数据
 
 ## 5. 版本
 
+- v1.5.2：VLM 精度默认数据集改为 MMMU-Pro，支持 4 选项 / 10 选项 / vision
 - v1.5.1：新增 VLM 多模态性能压测模式（random_vl）
 - v1.5.0：新增 VLM 多模态精度模式（MMMU）
 - v1.4.0：配置拆分为公共文件和模式专属文件，Performance 拆分为 `performance-c` / `performance-n`

@@ -2,6 +2,12 @@
 
 ## 版本历史
 
+### v1.5.2 — 2026-10-29
+
+- **VLM 精度测试默认数据集从 MMMU 改为 MMMU-Pro**
+  - 默认 `dataset: mmmu_pro`，评测 test split（30 个学科 / 1730 题）
+  - 新增 `dataset_format` 配置和 `--vlm-dataset-format`，支持 4 选项、10 选项、vision 三种变体
+
 ### v1.5.1 — 2026-10-29
 
 - **新增 VLM 多模态性能压测模式**
@@ -99,9 +105,10 @@ python3 run_perf.py --mode agent --agent-dataset lite --agent-count 10
 # 5. Accuracy：evalscope 精度测试
 python3 run_perf.py --mode accuracy
 
-# 6. VLM：evalscope MMMU 多模态精度测试
+# 6. VLM：evalscope MMMU-Pro 多模态精度测试
 python3 run_perf.py --mode vlm
 python3 run_perf.py --mode vlm --vlm-limit 10 --vlm-subset Accounting Art
+python3 run_perf.py --mode vlm --vlm-dataset-format "standard (10 options)"
 
 # 7. Performance VL：evalscope random_vl 多模态性能压测
 python3 run_perf.py --mode performance-vl
@@ -198,7 +205,8 @@ VLM 多模态精度模式专属配置：
 
 ```jsonc
 {
-  "dataset": "mmmu",
+  "dataset": "mmmu_pro",
+  "dataset_format": "standard (4 options)", // MMMU-Pro: standard (4 options) / standard (10 options) / vision
   "dataset_hub": "modelscope",
   "subset_list": [],          // 空=全部 30 个子集
   "limit": 0,                 // 每个子集：0=全量；整数=前 N 条；小数=百分比
@@ -218,9 +226,11 @@ VLM 多模态精度模式专属配置：
 }
 ```
 
-`subset_list` 可选值（MMMU 30 个学科）：Accounting、Agriculture、Architecture_and_Engineering、Art、Art_Theory、Basic_Medical_Science、Biology、Chemistry、Clinical_Medicine、Computer_Science、Design、Diagnostics_and_Laboratory_Medicine、Economics、Electronics、Energy_and_Power、Finance、Geography、History、Literature、Manage、Marketing、Materials、Math、Mechanical_Engineering、Music、Pharmacy、Physics、Psychology、Public_Health、Sociology。
+`dataset_format` 仅对 MMMU-Pro 生效：`standard (4 options)` 为 evalscope 默认，`standard (10 options)` 难度更高，`vision` 把题目嵌入图片。可用 `--vlm-dataset-format` 临时覆盖。
 
-VLM 模式依赖 evalscope ≥ 1.6；缺失时 `auto_prepare` 会自动 `pip install evalscope`。首次评测会把 MMMU 数据集下载到 `~/.cache/modelscope/datasets`。
+`subset_list` 可选值（MMMU-Pro 30 个学科）：Accounting、Agriculture、Architecture_and_Engineering、Art、Art_Theory、Basic_Medical_Science、Biology、Chemistry、Clinical_Medicine、Computer_Science、Design、Diagnostics_and_Laboratory_Medicine、Economics、Electronics、Energy_and_Power、Finance、Geography、History、Literature、Manage、Marketing、Materials、Math、Mechanical_Engineering、Music、Pharmacy、Physics、Psychology、Public_Health、Sociology。
+
+VLM 模式依赖 evalscope ≥ 1.6；缺失时 `auto_prepare` 会自动 `pip install evalscope`。首次评测会把 MMMU-Pro（`AI-ModelScope/MMMU_Pro`）下载到 `~/.cache/modelscope/datasets`。
 
 ### `performance-vl.cfg`
 

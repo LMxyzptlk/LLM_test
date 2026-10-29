@@ -16,7 +16,7 @@ ais_bench 自动性能测试脚本 (JSON 用例驱动)
     # accuracy 模式: 跑 evalscope 精度测试, 当前默认 GPQA Diamond
     python3 run_perf.py --mode accuracy
 
-    # vlm 模式: 跑 evalscope 多模态精度测试, 当前默认 MMMU
+    # vlm 模式: 跑 evalscope 多模态精度测试, 当前默认 MMMU-Pro
     python3 run_perf.py --mode vlm
 
     # performance-vl 模式: 跑 evalscope 多模态性能压测, 默认 random_vl
@@ -219,7 +219,7 @@ def _load_cfg():
         "dataset", "eval_batch_size", "work_dir", "generation_config", "dataset_args",
     }
     allowed_vlm_keys = {
-        "dataset", "dataset_hub", "subset_list", "limit", "repeats",
+        "dataset", "dataset_format", "dataset_hub", "subset_list", "limit", "repeats",
         "eval_batch_size", "work_dir", "generation_config", "dataset_args",
         "model_cfg_params",
     }
@@ -347,7 +347,7 @@ ACCURACY_DATASET_ARGS = _ACCURACY_CFG.get(
 )
 
 # VLM 多模态精度测试配置
-VLM_DATASET = _VLM_CFG.get("dataset", "mmmu")
+VLM_DATASET = _VLM_CFG.get("dataset", "mmmu_pro")
 VLM_DATASET_HUB = _VLM_CFG.get("dataset_hub", "modelscope")
 VLM_SUBSET_LIST = list(_VLM_CFG.get("subset_list", []) or [])
 VLM_LIMIT = _VLM_CFG.get("limit", 0)
@@ -367,6 +367,9 @@ VLM_GENERATION_CONFIG = _VLM_CFG.get(
     },
 )
 VLM_DATASET_ARGS = _VLM_CFG.get("dataset_args", {})
+# MMMU-Pro 的变体：standard (4 options) / standard (10 options) / vision
+VLM_DATASET_FORMAT = _VLM_CFG.get("dataset_format", "")
+MMMU_PRO_DATASET_FORMATS = ["standard (4 options)", "standard (10 options)", "vision"]
 
 # Performance VL 多模态性能压测配置
 PERF_VL_DATASET = _PERFORMANCE_VL_CFG.get("dataset", "random_vl")
@@ -395,7 +398,7 @@ _PERFORMANCE_VL_MODEL_CFG_PARAMS = dict(
     _PERFORMANCE_VL_CFG.get("model_cfg_params", {})
 )
 
-# MMMU validation split 的 30 个子集，来自 evalscope MMMUAdapter.SUBSET_LIST
+# MMMU / MMMU-Pro test split 的 30 个子集，来自 evalscope adapter 的 SUBSET_LIST
 MMMU_SUBSET_LIST = [
     "Accounting",
     "Agriculture",
@@ -996,20 +999,32 @@ def _validate_vlm_limit(value, source):
 
 
 def _validate_vlm_subsets(dataset, subset_list):
-    """MMMU 子集名做一次校验，避免配置拼错后白跑。"""
-    if not subset_list or dataset != "mmmu":
+    """MMMU / MMMU-Pro 子集名做一次校验，避免配置拼错后白跑。"""
+    if not subset_list or dataset not in ("mmmu", "mmmu_pro"):
         return
     unknown = [s for s in subset_list if s not in MMMU_SUBSET_LIST]
     if unknown:
         raise RuntimeError(
-            "未知的 MMMU 子集: {}；可选: {}".format(
+            "未知的 MMMU/MMMU-Pro 子集: {}；可选: {}".format(
                 ", ".join(unknown), ", ".join(MMMU_SUBSET_LIST)
             )
         )
 
 
-def _merge_vlm_dataset_args(dataset, subset_list):
-    """把 subset_list 合并进 evalscope dataset_args。"""
+def _validate_vlm_dataset_format(dataset, dataset_format):
+    """MMMU-Pro 的 dataset_format 取值校验。"""
+    if not dataset_format or dataset != "mmmu_pro":
+        return
+    if dataset_format not in MMMU_PRO_DATASET_FORMATS:
+        raise RuntimeError(
+            "未知的 MMMU-Pro dataset_format: {!r}；可选: {}".format(
+                dataset_format, ", ".join(MMMU_PRO_DATASET_FORMATS)
+            )
+        )
+
+
+def _merge_vlm_dataset_args(dataset, subset_list, dataset_format):
+    """把 subset_list 和 MMMU-Pro dataset_format 合并进 evalscope dataset_args。"""
     if isinstance(VLM_DATASET_ARGS, str):
         base_args = json.loads(VLM_DATASET_ARGS)
     else:
@@ -1017,6 +1032,13 @@ def _merge_vlm_dataset_args(dataset, subset_list):
     if not isinstance(base_args, dict):
         raise RuntimeError("vlm.dataset_args 必须是 JSON 对象，当前: {!r}".format(base_args))
     base_args = dict(base_args)
+
+    if dataset == "mmmu_pro" and dataset_format:
+        dataset_cfg = dict(base_args.get(dataset) or {})
+        extra_params = dict(dataset_cfg.get("extra_params") or {})
+        extra_params["dataset_format"] = dataset_format
+        dataset_cfg["extra_params"] = extra_params
+        base_args[dataset] = dataset_cfg
 
     if subset_list:
         dataset_cfg = dict(base_args.get(dataset) or {})
@@ -1163,10 +1185,12 @@ def _write_vlm_summary(summary, report_path):
 
 
 def run_vlm_mode():
-    """执行 evalscope 多模态精度测试，默认 MMMU。"""
+    """执行 evalscope 多模态精度测试，默认 MMMU-Pro。"""
     print("========== VLM 模式: evalscope 多模态精度测试 ==========")
     print("数据集 = {}".format(VLM_DATASET))
     print("数据集源 = {}".format(VLM_DATASET_HUB or "默认"))
+    if VLM_DATASET == "mmmu_pro":
+        print("dataset_format = {}".format(VLM_DATASET_FORMAT or "evalscope 默认"))
     print("子集 = {}".format(", ".join(VLM_SUBSET_LIST) if VLM_SUBSET_LIST else "全部"))
     print("limit = {}".format("全部" if not VLM_LIMIT else VLM_LIMIT))
     print("repeats = {}".format(VLM_REPEATS))
@@ -1187,8 +1211,11 @@ def run_vlm_mode():
         raise RuntimeError("vlm 模式的 dataset 不能为空")
 
     _validate_vlm_subsets(VLM_DATASET, VLM_SUBSET_LIST)
+    _validate_vlm_dataset_format(VLM_DATASET, VLM_DATASET_FORMAT)
     limit = _validate_vlm_limit(VLM_LIMIT, "vlm.limit")
-    dataset_args = _merge_vlm_dataset_args(VLM_DATASET, VLM_SUBSET_LIST)
+    dataset_args = _merge_vlm_dataset_args(
+        VLM_DATASET, VLM_SUBSET_LIST, VLM_DATASET_FORMAT
+    )
 
     api_url = "http://{}:{}/v1".format(host_ip, host_port)
     work_dir = (
@@ -2718,7 +2745,9 @@ def main():
     ap.add_argument("--accuracy-work-dir", default=None,
                     help="accuracy 模式: 输出目录，默认 accuracy.work_dir")
     ap.add_argument("--vlm-dataset", default=None,
-                    help="vlm 模式: evalscope 数据集，默认 vlm.dataset (mmmu)")
+                    help="vlm 模式: evalscope 数据集，默认 vlm.dataset (mmmu_pro)")
+    ap.add_argument("--vlm-dataset-format", choices=MMMU_PRO_DATASET_FORMATS, default=None,
+                    help="vlm 模式: MMMU-Pro 格式变体，默认 vlm.dataset_format")
     ap.add_argument("--vlm-dataset-hub", choices=["modelscope", "huggingface"], default=None,
                     help="vlm 模式: 数据集下载源，默认 vlm.dataset_hub")
     ap.add_argument("--vlm-subset", nargs="+", default=None,
@@ -2804,7 +2833,7 @@ def main():
     global RUN_MODE, RUN_MODES
     global AGENT_DATASET, AGENT_COUNT, AGENT_STEP_LIMIT, AGENT_WORK_DIR
     global ACCURACY_DATASET, ACCURACY_EVAL_BATCH_SIZE, ACCURACY_WORK_DIR
-    global VLM_DATASET, VLM_DATASET_HUB, VLM_SUBSET_LIST, VLM_LIMIT, VLM_REPEATS
+    global VLM_DATASET, VLM_DATASET_HUB, VLM_DATASET_FORMAT, VLM_SUBSET_LIST, VLM_LIMIT, VLM_REPEATS
     global VLM_EVAL_BATCH_SIZE, VLM_WORK_DIR
     global PERF_VL_DATASET, PERF_VL_CONCURRENCIES, PERF_VL_NUMBER
     global PERF_VL_MAX_OUT_LEN, PERF_VL_MIN_OUT_LEN
@@ -2848,6 +2877,8 @@ def main():
 
     if args.vlm_dataset:
         VLM_DATASET = args.vlm_dataset
+    if args.vlm_dataset_format:
+        VLM_DATASET_FORMAT = args.vlm_dataset_format
     if args.vlm_dataset_hub:
         VLM_DATASET_HUB = args.vlm_dataset_hub
     if args.vlm_subset:
