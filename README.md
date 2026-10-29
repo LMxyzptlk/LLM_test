@@ -2,6 +2,14 @@
 
 ## 版本历史
 
+### v1.5.1 — 2026-10-29
+
+- **新增 VLM 多模态性能压测模式**
+  - `--mode performance-vl`，基于 `evalscope perf`，默认使用 `random_vl` 在线生成带图请求
+  - 新增 `performance-vl.cfg`：并发、请求数、输出长度、图片尺寸/数量、tokenizer 等
+  - 支持 `--perf-vl-concurrency` / `--perf-vl-number` / `--perf-vl-image-width` 等命令行覆盖
+  - 多并发依次压测，结束后汇总各并发吞吐、TTFT、TPOT、P99 指标，输出 CSV / JSON
+
 ### v1.5.0 — 2026-10-29
 
 - **新增 VLM 多模态精度测试模式**
@@ -64,6 +72,7 @@
 | `agent.cfg` | Agent 模式专属配置 |
 | `accuracy.cfg` | Accuracy 模式专属配置 |
 | `vlm.cfg` | VLM 多模态精度模式专属配置 |
+| `performance-vl.cfg` | VLM 多模态性能压测模式专属配置 |
 | `performance-c.cfg` | Performance concat 拼接压测配置 |
 | `performance-n.cfg` | Performance native 原生多轮压测配置 |
 | `gen_datasets.py` | 提前批量生成 performance-c 压测数据集 |
@@ -94,11 +103,15 @@ python3 run_perf.py --mode accuracy
 python3 run_perf.py --mode vlm
 python3 run_perf.py --mode vlm --vlm-limit 10 --vlm-subset Accounting Art
 
-# 7. 混合运行
+# 7. Performance VL：evalscope random_vl 多模态性能压测
+python3 run_perf.py --mode performance-vl
+python3 run_perf.py --mode performance-vl --perf-vl-concurrency 1 8 --perf-vl-number 50
+
+# 8. 混合运行
 python3 run_perf.py --mode agent performance-c accuracy vlm
 python3 run_perf.py --mode performance-n,accuracy
 
-# 8. 可选：预生成 performance-c 数据集
+# 9. 可选：预生成 performance-c 数据集
 python3 gen_datasets.py --dry-run
 python3 gen_datasets.py
 ```
@@ -209,6 +222,40 @@ VLM 多模态精度模式专属配置：
 
 VLM 模式依赖 evalscope ≥ 1.6；缺失时 `auto_prepare` 会自动 `pip install evalscope`。首次评测会把 MMMU 数据集下载到 `~/.cache/modelscope/datasets`。
 
+### `performance-vl.cfg`
+
+VLM 多模态性能压测模式专属配置：
+
+```jsonc
+{
+  "dataset": "random_vl",
+  "concurrencies": [1, 8, 16, 32],
+  "number": 0,                // 0=自动 max(20, 并发*10)；也可写数组逐个指定
+  "max_out_len": 128,
+  "min_out_len": 128,
+  "min_prompt_length": 100,
+  "max_prompt_length": 100,
+  "prefix_length": 0,
+  "image_width": 512,
+  "image_height": 512,
+  "image_format": "RGB",
+  "image_num": 1,
+  "image_patch_size": 28,
+  "request_rate": -1,         // -1=不限制
+  "sleep_interval": 5,
+  "tokenizer_path": "",       // 留空则用公共 model_cfg_params.path
+  "work_dir": "outputs/performance/vl",
+  "result_dir": "results/performance/vl",
+  "extra_args": {"ignore_eos": true}
+}
+```
+
+`random_vl` 会在本地随机生成纯色/几何图形图片并以 base64 发送，适合稳定压测多模态服务的吞吐和时延。`tokenizer_path` 用于统计 prompt token 数，未填时回退到 `model_cfg_params.path`；如果服务端模型路径在测试机不可见，需要显式指定 tokenizer 路径。
+
+压测结束后会打印各并发的请求吞吐、输出吞吐、平均 TTFT / TPOT / Latency，并汇总 P99 指标到 `results/performance/vl/perf_vl_<timestamp>.csv` / `.json`。
+
+Performance VL 依赖 `evalscope[perf]`；缺失且 `auto_prepare=true` 时会自动执行 `pip install evalscope[perf]`。
+
 ### `performance-c.cfg`
 
 Performance concat 拼接压测专属配置：
@@ -252,11 +299,12 @@ Performance native 原生多轮压测专属配置：
 
 ## Mode
 
-支持五个直接模式：
+支持六个直接模式：
 
 ```text
 performance-c
 performance-n
+performance-vl
 agent
 accuracy
 vlm
@@ -269,6 +317,7 @@ python3 run_perf.py --mode agent performance-c accuracy vlm
 python3 run_perf.py --mode performance-n,accuracy
 python3 run_perf.py --mode accuracy --mode agent
 python3 run_perf.py --mode vlm --vlm-limit 10
+python3 run_perf.py --mode performance-vl
 ```
 
 配置文件里的 `mode` 也支持字符串或数组：
@@ -293,6 +342,8 @@ outputs/performance/native_multiturn/ # performance-n AISBench 输出
 outputs/agent/          # agent 输出
 outputs/accuracy/       # accuracy 输出
 outputs/vlm/{timestamp}/ # vlm 输出（含 vlm_summary.json / vlm_summary.csv）
+outputs/performance/vl/{timestamp}/ # performance-vl 压测输出（evalscope perf）
+results/performance/vl/ # performance-vl 汇总 CSV / JSON
 outputs/agent_configs/  # agent 自动生成的 ais_bench 配置
 raw_datasets/           # 自动下载的原始数据
 ```

@@ -19,6 +19,9 @@ ais_bench 自动性能测试脚本 (JSON 用例驱动)
     # vlm 模式: 跑 evalscope 多模态精度测试, 当前默认 MMMU
     python3 run_perf.py --mode vlm
 
+    # performance-vl 模式: 跑 evalscope 多模态性能压测, 默认 random_vl
+    python3 run_perf.py --mode performance-vl
+
     # performance-c 简易模式
     python3 run_perf.py --mode performance-c -i 32768 -c 1 8 16 --max-out-len 1024 --request-rate 0.5
     python3 run_perf.py --mode performance-c -i 32768 -c 1 8 16 --dataset-type gsm sharegpt
@@ -77,6 +80,7 @@ CFG_NORMAL_PATH = os.path.join(SCRIPT_DIR, "cfg-normal.cfg")
 AGENT_CFG_PATH = os.path.join(SCRIPT_DIR, "agent.cfg")
 ACCURACY_CFG_PATH = os.path.join(SCRIPT_DIR, "accuracy.cfg")
 VLM_CFG_PATH = os.path.join(SCRIPT_DIR, "vlm.cfg")
+PERFORMANCE_VL_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-vl.cfg")
 PERFORMANCE_C_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-c.cfg")
 PERFORMANCE_N_CFG_PATH = os.path.join(SCRIPT_DIR, "performance-n.cfg")
 SETUP_SWEBENCH_SCRIPT = os.path.join(SCRIPT_DIR, "setup_swebench.sh")
@@ -143,7 +147,7 @@ def _strip_jsonc_comments(text):
     return "".join(out)
 
 
-_SUPPORTED_MODES = ("performance-c", "performance-n", "agent", "accuracy", "vlm")
+_SUPPORTED_MODES = ("performance-c", "performance-n", "performance-vl", "agent", "accuracy", "vlm")
 
 
 def _parse_mode_list(value, source="mode"):
@@ -199,6 +203,7 @@ def _load_cfg():
     agent = _load_jsonc_file(AGENT_CFG_PATH)
     accuracy = _load_jsonc_file(ACCURACY_CFG_PATH)
     vlm = _load_jsonc_file(VLM_CFG_PATH)
+    performance_vl = _load_jsonc_file(PERFORMANCE_VL_CFG_PATH)
     performance_c = _load_jsonc_file(PERFORMANCE_C_CFG_PATH)
     performance_n = _load_jsonc_file(PERFORMANCE_N_CFG_PATH)
 
@@ -223,6 +228,13 @@ def _load_cfg():
         "default_max_out_len", "default_request_rate", "default_pfx",
         "dataset_types", "raw_gsm_path", "raw_sharegpt_path", "raw_swebench_path",
     }
+    allowed_performance_vl_keys = {
+        "dataset", "concurrencies", "number", "max_out_len", "min_out_len",
+        "min_prompt_length", "max_prompt_length", "prefix_length",
+        "image_width", "image_height", "image_format", "image_num",
+        "image_patch_size", "request_rate", "sleep_interval", "tokenizer_path",
+        "work_dir", "result_dir", "extra_args", "model_cfg_params",
+    }
     allowed_performance_n_keys = {
         "conversation_count", "infer_mode", "concurrencies", "max_out_len",
         "request_rate", "work_dir", "result_dir", "raw_sharegpt_path",
@@ -233,6 +245,7 @@ def _load_cfg():
     _check_cfg_keys(agent, allowed_agent_keys, "agent.cfg")
     _check_cfg_keys(accuracy, allowed_accuracy_keys, "accuracy.cfg")
     _check_cfg_keys(vlm, allowed_vlm_keys, "vlm.cfg")
+    _check_cfg_keys(performance_vl, allowed_performance_vl_keys, "performance-vl.cfg")
     _check_cfg_keys(performance_c, allowed_performance_c_keys, "performance-c.cfg")
     _check_cfg_keys(performance_n, allowed_performance_n_keys, "performance-n.cfg")
 
@@ -246,6 +259,7 @@ def _load_cfg():
         "agent": _deep_merge(common_without_mode, agent),
         "accuracy": _deep_merge(common_without_mode, accuracy),
         "vlm": _deep_merge(common_without_mode, vlm),
+        "performance-vl": _deep_merge(common_without_mode, performance_vl),
         "performance": performance,
     }
 
@@ -258,6 +272,7 @@ _AGENT_CFG = _cfg.get("agent", {})
 _PERFORMANCE_CFG = _cfg.get("performance", {})
 _ACCURACY_CFG = _cfg.get("accuracy", {})
 _VLM_CFG = _cfg.get("vlm", {})
+_PERFORMANCE_VL_CFG = _cfg.get("performance-vl", {})
 
 # Agent 模式配置
 AGENT_DATASET = _AGENT_CFG.get("dataset", "lite")
@@ -353,6 +368,33 @@ VLM_GENERATION_CONFIG = _VLM_CFG.get(
 )
 VLM_DATASET_ARGS = _VLM_CFG.get("dataset_args", {})
 
+# Performance VL 多模态性能压测配置
+PERF_VL_DATASET = _PERFORMANCE_VL_CFG.get("dataset", "random_vl")
+PERF_VL_CONCURRENCIES = _PERFORMANCE_VL_CFG.get("concurrencies", [1, 8, 16, 32])
+PERF_VL_NUMBER = _PERFORMANCE_VL_CFG.get("number", 0)
+PERF_VL_MAX_OUT_LEN = int(_PERFORMANCE_VL_CFG.get("max_out_len", 128))
+PERF_VL_MIN_OUT_LEN = int(
+    _PERFORMANCE_VL_CFG.get("min_out_len", PERF_VL_MAX_OUT_LEN)
+)
+PERF_VL_MIN_PROMPT_LENGTH = int(_PERFORMANCE_VL_CFG.get("min_prompt_length", 100))
+PERF_VL_MAX_PROMPT_LENGTH = int(_PERFORMANCE_VL_CFG.get("max_prompt_length", 100))
+PERF_VL_PREFIX_LENGTH = int(_PERFORMANCE_VL_CFG.get("prefix_length", 0))
+PERF_VL_IMAGE_WIDTH = int(_PERFORMANCE_VL_CFG.get("image_width", 512))
+PERF_VL_IMAGE_HEIGHT = int(_PERFORMANCE_VL_CFG.get("image_height", 512))
+PERF_VL_IMAGE_FORMAT = _PERFORMANCE_VL_CFG.get("image_format", "RGB")
+PERF_VL_IMAGE_NUM = int(_PERFORMANCE_VL_CFG.get("image_num", 1))
+PERF_VL_IMAGE_PATCH_SIZE = int(_PERFORMANCE_VL_CFG.get("image_patch_size", 28))
+PERF_VL_REQUEST_RATE = float(_PERFORMANCE_VL_CFG.get("request_rate", -1))
+PERF_VL_SLEEP_INTERVAL = int(_PERFORMANCE_VL_CFG.get("sleep_interval", 5))
+PERF_VL_TOKENIZER_PATH = _PERFORMANCE_VL_CFG.get("tokenizer_path", "")
+PERF_VL_WORK_DIR = _PERFORMANCE_VL_CFG.get("work_dir", "outputs/performance/vl")
+PERF_VL_RESULT_DIR = _PERFORMANCE_VL_CFG.get("result_dir", "results/performance/vl")
+PERF_VL_EXTRA_ARGS = _PERFORMANCE_VL_CFG.get("extra_args", {"ignore_eos": True})
+PERF_VL_AUTO_PREPARE = bool(_PERFORMANCE_VL_CFG.get("auto_prepare", True))
+_PERFORMANCE_VL_MODEL_CFG_PARAMS = dict(
+    _PERFORMANCE_VL_CFG.get("model_cfg_params", {})
+)
+
 # MMMU validation split 的 30 个子集，来自 evalscope MMMUAdapter.SUBSET_LIST
 MMMU_SUBSET_LIST = [
     "Accounting",
@@ -394,6 +436,7 @@ def _model_cfg_for_mode(mode):
         "agent": _AGENT_MODEL_CFG_PARAMS,
         "accuracy": _ACCURACY_MODEL_CFG_PARAMS,
         "vlm": _VLM_MODEL_CFG_PARAMS,
+        "performance-vl": _PERFORMANCE_VL_MODEL_CFG_PARAMS,
         "performance-c": _PERFORMANCE_MODEL_CFG_PARAMS,
         "performance-n": _PERFORMANCE_MODEL_CFG_PARAMS,
     }.get(mode, _PERFORMANCE_MODEL_CFG_PARAMS)
@@ -842,8 +885,11 @@ def run_agent_mode():
 
 
 # -------------------- Accuracy 模式: evalscope 精度测试 --------------------
-def _ensure_evalscope_environment(auto_prepare, label="accuracy"):
-    """确保 evalscope 可用；缺失时按配置自动安装。"""
+def _ensure_evalscope_environment(auto_prepare, label="accuracy", extras=""):
+    """确保 evalscope 可用；缺失时按配置自动安装。
+
+    extras 用于指定 pip extra，例如性能压测需要 evalscope[perf]。
+    """
     if shutil.which("evalscope"):
         print("  [{}] evalscope 环境已就绪".format(label))
         return
@@ -851,15 +897,18 @@ def _ensure_evalscope_environment(auto_prepare, label="accuracy"):
     if not auto_prepare:
         raise RuntimeError("evalscope 不存在，且 {}.auto_prepare=false".format(label))
 
-    print("  [{}] 未找到 evalscope，开始自动安装".format(label))
+    package = "evalscope[{}]".format(extras) if extras else "evalscope"
+    print("  [{}] 未找到 evalscope，开始自动安装 {}".format(label, package))
     _run_checked(
-        [sys.executable, "-m", "pip", "install", "evalscope"],
+        [sys.executable, "-m", "pip", "install", package],
         cwd=SCRIPT_DIR,
-        label="pip install evalscope",
+        label="pip install {}".format(package),
     )
     if not shutil.which("evalscope"):
         raise RuntimeError(
-            "evalscope 安装后仍不可用。请检查 Python 环境和 PATH，或手动执行: pip install evalscope"
+            "evalscope 安装后仍不可用。请检查 Python 环境和 PATH，或手动执行: pip install {}".format(
+                package
+            )
         )
     print("  [{}] evalscope 安装完成".format(label))
 
@@ -1186,6 +1235,345 @@ def run_vlm_mode():
     _print_vlm_summary(summary)
     _write_vlm_summary(summary, report_path)
     print("  [vlm] 多模态精度测试完成")
+
+
+# -------------------- Performance VL 模式: evalscope 多模态性能压测 --------------------
+def _normalize_perf_vl_concurrencies(value):
+    """并发列表统一成正整数列表。"""
+    if isinstance(value, int) and not isinstance(value, bool):
+        values = [value]
+    elif isinstance(value, (list, tuple)):
+        values = list(value)
+    else:
+        raise RuntimeError(
+            "performance-vl.concurrencies 必须是整数或整数数组，当前: {!r}".format(value)
+        )
+
+    result = []
+    for item in values:
+        if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+            raise RuntimeError(
+                "performance-vl.concurrencies 必须是正整数，当前: {!r}".format(item)
+            )
+        result.append(item)
+    if not result:
+        raise RuntimeError("performance-vl.concurrencies 不能为空")
+    return result
+
+
+def _normalize_perf_vl_numbers(concurrencies, number):
+    """number 支持单个整数或与并发一一对应的数组；0 表示按并发自动取 10 倍。"""
+    if isinstance(number, (list, tuple)):
+        numbers = []
+        for item in number:
+            if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+                raise RuntimeError(
+                    "performance-vl.number 数组里必须是正整数，当前: {!r}".format(item)
+                )
+            numbers.append(item)
+        if len(numbers) != len(concurrencies):
+            raise RuntimeError(
+                "performance-vl.number 数组长度必须和 concurrencies 一致: {} vs {}".format(
+                    len(numbers), len(concurrencies)
+                )
+            )
+        return numbers
+
+    if isinstance(number, bool) or not isinstance(number, int):
+        raise RuntimeError(
+            "performance-vl.number 必须是整数或整数数组，当前: {!r}".format(number)
+        )
+    if number < 0:
+        raise RuntimeError("performance-vl.number 不能小于 0")
+    if number == 0:
+        return [max(20, c * 10) for c in concurrencies]
+    return [number] * len(concurrencies)
+
+
+def _perf_vl_int(value, name, minimum=0):
+    """校验配置里的非负整数。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError("{} 必须是整数，当前: {!r}".format(name, value))
+    if value < minimum:
+        raise RuntimeError("{} 不能小于 {}".format(name, minimum))
+    return value
+
+
+def _build_perf_vl_cmd(
+    model_name,
+    url,
+    api_key,
+    dataset,
+    concurrencies,
+    numbers,
+    min_out_len,
+    max_out_len,
+    min_prompt_length,
+    max_prompt_length,
+    prefix_length,
+    image_width,
+    image_height,
+    image_format,
+    image_num,
+    image_patch_size,
+    tokenizer_path,
+    work_dir,
+    request_rate,
+    sleep_interval,
+    extra_args,
+):
+    """拼装 evalscope perf 多模态压测命令。"""
+    cmd = [
+        "evalscope", "perf",
+        "--model", model_name,
+        "--url", url,
+        "--api", "openai",
+        "--dataset", dataset,
+        "--parallel", *[str(c) for c in concurrencies],
+        "--number", *[str(n) for n in numbers],
+        "--min-tokens", str(min_out_len),
+        "--max-tokens", str(max_out_len),
+        "--min-prompt-length", str(min_prompt_length),
+        "--max-prompt-length", str(max_prompt_length),
+        "--prefix-length", str(prefix_length),
+        "--image-width", str(image_width),
+        "--image-height", str(image_height),
+        "--image-format", image_format,
+        "--image-num", str(image_num),
+        "--image-patch-size", str(image_patch_size),
+        "--tokenizer-path", tokenizer_path,
+        "--outputs-dir", work_dir,
+        "--rate", str(request_rate),
+        "--sleep-interval", str(sleep_interval),
+    ]
+    if api_key:
+        cmd += ["--api-key", api_key]
+    if extra_args:
+        cmd += ["--extra-args", extra_args]
+    return cmd
+
+
+def _find_latest_perf_vl_summaries(work_dir):
+    """找到最近一次压测的各并发 benchmark_summary.json。"""
+    pattern = os.path.join(work_dir, "**", "benchmark_summary.json")
+    summaries = glob.glob(pattern, recursive=True)
+    if not summaries:
+        return []
+    latest = max(summaries, key=os.path.getmtime)
+    run_root = os.path.dirname(os.path.dirname(latest))
+    return sorted(glob.glob(os.path.join(run_root, "parallel_*", "benchmark_summary.json")))
+
+
+def _read_perf_vl_p99(summary_path):
+    """读取同目录 benchmark_percentile.json 里的 P99 指标。"""
+    percentile_path = os.path.join(os.path.dirname(summary_path), "benchmark_percentile.json")
+    if not os.path.isfile(percentile_path):
+        return {}
+    try:
+        with open(percentile_path, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+    except Exception:
+        return {}
+    for row in rows:
+        if str(row.get("Percentiles")) == "99%":
+            return row
+    return {}
+
+
+def _parse_perf_vl_summary(summary_path):
+    """把 benchmark_summary.json 转成一行汇总。"""
+    with open(summary_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    p99 = _read_perf_vl_p99(summary_path)
+
+    return {
+        "concurrency": data.get("Number of concurrency"),
+        "requests": data.get("Total requests"),
+        "succeed": data.get("Succeed requests"),
+        "failed": data.get("Failed requests"),
+        "request_throughput": data.get("Request throughput (req/s)"),
+        "output_token_throughput": data.get("Output token throughput (tok/s)"),
+        "total_token_throughput": data.get("Total token throughput (tok/s)"),
+        "avg_latency_s": data.get("Average latency (s)"),
+        "avg_ttft_s": data.get("Average time to first token (s)"),
+        "avg_tpot_s": data.get("Average time per output token (s)"),
+        "avg_itl_s": data.get("Average inter-token latency (s)"),
+        "avg_input_tokens": data.get("Average input tokens per request"),
+        "avg_output_tokens": data.get("Average output tokens per request"),
+        "p99_latency_s": p99.get("Latency (s)"),
+        "p99_ttft_s": p99.get("TTFT (s)"),
+        "p99_tpot_s": p99.get("TPOT (s)"),
+    }
+
+
+def _print_perf_vl_summary(rows):
+    """打印各并发压测结果。"""
+    if not rows:
+        return
+
+    print(
+        "    {:>6}  {:>7}  {:>6}  {:>6}  {:>9}  {:>11}  {:>9}  {:>9}  {:>10}".format(
+            "并发", "请求", "成功", "失败", "Req/s", "Out(tok/s)", "TTFT(s)", "TPOT(s)", "Lat(s)"
+        )
+    )
+    print("    " + "-" * 96)
+    for row in rows:
+        print(
+            "    {:>6}  {:>7}  {:>6}  {:>6}  {:>9}  {:>11}  {:>9}  {:>9}  {:>10}".format(
+                row["concurrency"],
+                row["requests"],
+                row["succeed"],
+                row["failed"],
+                row["request_throughput"],
+                row["output_token_throughput"],
+                row["avg_ttft_s"],
+                row["avg_tpot_s"],
+                row["avg_latency_s"],
+            )
+        )
+
+
+def _write_perf_vl_summary(rows, result_dir):
+    """把各并发结果写成 CSV 和 JSON。"""
+    os.makedirs(result_dir, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    csv_path = os.path.join(result_dir, "perf_vl_{}.csv".format(stamp))
+    json_path = os.path.join(result_dir, "perf_vl_{}.json".format(stamp))
+
+    fields = [
+        "concurrency", "requests", "succeed", "failed",
+        "request_throughput", "output_token_throughput", "total_token_throughput",
+        "avg_latency_s", "avg_ttft_s", "avg_tpot_s", "avg_itl_s",
+        "avg_input_tokens", "avg_output_tokens",
+        "p99_latency_s", "p99_ttft_s", "p99_tpot_s",
+    ]
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(fields)
+        for row in rows:
+            writer.writerow([row.get(field, "") for field in fields])
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2, ensure_ascii=False)
+
+    print("  [perf-vl] 汇总已写入: {} , {}".format(csv_path, json_path))
+
+
+def run_performance_vl_mode():
+    """执行 evalscope 多模态性能压测，默认 random_vl。"""
+    print("========== Performance VL 模式: evalscope 多模态性能压测 ==========")
+    print("数据集 = {}".format(PERF_VL_DATASET))
+    print("并发 = {}".format(PERF_VL_CONCURRENCIES))
+    print("number = {}".format("按并发自动 10 倍" if PERF_VL_NUMBER == 0 else PERF_VL_NUMBER))
+    print(
+        "图片 = {}x{} x {} 张, format={}, patch={}".format(
+            PERF_VL_IMAGE_WIDTH,
+            PERF_VL_IMAGE_HEIGHT,
+            PERF_VL_IMAGE_NUM,
+            PERF_VL_IMAGE_FORMAT,
+            PERF_VL_IMAGE_PATCH_SIZE,
+        )
+    )
+    print(
+        "prompt 长度 = {} ~ {}, prefix = {}".format(
+            PERF_VL_MIN_PROMPT_LENGTH, PERF_VL_MAX_PROMPT_LENGTH, PERF_VL_PREFIX_LENGTH
+        )
+    )
+    print("输出长度 = {} ~ {}".format(PERF_VL_MIN_OUT_LEN, PERF_VL_MAX_OUT_LEN))
+    print("工作目录 = {}".format(PERF_VL_WORK_DIR))
+    print("结果目录 = {}".format(PERF_VL_RESULT_DIR))
+
+    _ensure_evalscope_environment(PERF_VL_AUTO_PREPARE, "perf-vl", extras="perf")
+
+    model_name = MODEL_CFG_PARAMS.get("model", "")
+    host_ip = MODEL_CFG_PARAMS.get("host_ip", "")
+    host_port = MODEL_CFG_PARAMS.get("host_port", "")
+    api_key = MODEL_CFG_PARAMS.get("api_key", "EMPTY") or "EMPTY"
+    tokenizer_path = PERF_VL_TOKENIZER_PATH or MODEL_CFG_PARAMS.get("path", "")
+    if not model_name or not host_ip or not host_port:
+        raise RuntimeError(
+            "performance-vl 模式需要在 performance-vl.model_cfg_params 里配置 model / host_ip / host_port"
+        )
+    if not tokenizer_path:
+        raise RuntimeError(
+            "performance-vl 需要 tokenizer_path；请在 performance-vl.cfg 配置，"
+            "或在 model_cfg_params 里配置 path"
+        )
+
+    concurrencies = _normalize_perf_vl_concurrencies(PERF_VL_CONCURRENCIES)
+    numbers = _normalize_perf_vl_numbers(concurrencies, PERF_VL_NUMBER)
+
+    max_out_len = _perf_vl_int(PERF_VL_MAX_OUT_LEN, "performance-vl.max_out_len")
+    min_out_len = _perf_vl_int(PERF_VL_MIN_OUT_LEN, "performance-vl.min_out_len")
+    min_prompt = _perf_vl_int(PERF_VL_MIN_PROMPT_LENGTH, "performance-vl.min_prompt_length")
+    max_prompt = _perf_vl_int(PERF_VL_MAX_PROMPT_LENGTH, "performance-vl.max_prompt_length")
+    prefix_length = _perf_vl_int(PERF_VL_PREFIX_LENGTH, "performance-vl.prefix_length")
+    image_width = _perf_vl_int(PERF_VL_IMAGE_WIDTH, "performance-vl.image_width", 1)
+    image_height = _perf_vl_int(PERF_VL_IMAGE_HEIGHT, "performance-vl.image_height", 1)
+    image_num = _perf_vl_int(PERF_VL_IMAGE_NUM, "performance-vl.image_num", 1)
+    image_patch_size = _perf_vl_int(PERF_VL_IMAGE_PATCH_SIZE, "performance-vl.image_patch_size", 1)
+
+    if min_out_len > max_out_len:
+        raise RuntimeError("performance-vl.min_out_len 不能大于 max_out_len")
+    if min_prompt > max_prompt:
+        raise RuntimeError("performance-vl.min_prompt_length 不能大于 max_prompt_length")
+
+    extra_args = ""
+    if PERF_VL_EXTRA_ARGS:
+        extra_args = _accuracy_json_arg(
+            PERF_VL_EXTRA_ARGS, "extra_args", "performance-vl"
+        )
+
+    url = "http://{}:{}/v1/chat/completions".format(host_ip, host_port)
+    work_dir = (
+        PERF_VL_WORK_DIR
+        if os.path.isabs(PERF_VL_WORK_DIR)
+        else os.path.join(SCRIPT_DIR, PERF_VL_WORK_DIR)
+    )
+    result_dir = (
+        PERF_VL_RESULT_DIR
+        if os.path.isabs(PERF_VL_RESULT_DIR)
+        else os.path.join(SCRIPT_DIR, PERF_VL_RESULT_DIR)
+    )
+    os.makedirs(work_dir, exist_ok=True)
+
+    cmd = _build_perf_vl_cmd(
+        model_name=model_name,
+        url=url,
+        api_key=api_key,
+        dataset=PERF_VL_DATASET,
+        concurrencies=concurrencies,
+        numbers=numbers,
+        min_out_len=min_out_len,
+        max_out_len=max_out_len,
+        min_prompt_length=min_prompt,
+        max_prompt_length=max_prompt,
+        prefix_length=prefix_length,
+        image_width=image_width,
+        image_height=image_height,
+        image_format=PERF_VL_IMAGE_FORMAT,
+        image_num=image_num,
+        image_patch_size=image_patch_size,
+        tokenizer_path=tokenizer_path,
+        work_dir=work_dir,
+        request_rate=PERF_VL_REQUEST_RATE,
+        sleep_interval=PERF_VL_SLEEP_INTERVAL,
+        extra_args=extra_args,
+    )
+    print("  [perf-vl] CMD: {}".format(" ".join(cmd)))
+    _run_checked(cmd, cwd=SCRIPT_DIR, label="evalscope perf-vl")
+
+    summary_paths = _find_latest_perf_vl_summaries(work_dir)
+    if not summary_paths:
+        print("  [perf-vl] 未找到 benchmark_summary.json，跳过汇总")
+        return
+
+    rows = sorted(
+        [_parse_perf_vl_summary(path) for path in summary_paths],
+        key=lambda row: row.get("concurrency") or 0,
+    )
+    _print_perf_vl_summary(rows)
+    _write_perf_vl_summary(rows, result_dir)
+    print("  [perf-vl] 多模态性能压测完成")
 
 
 # 路径常量
@@ -2285,9 +2673,9 @@ def _apply_mode_overrides(args, mode):
         MODEL_CFG_PARAMS["host_ip"] = args.host_ip
     if args.host_port is not None:
         MODEL_CFG_PARAMS["host_port"] = args.host_port
-    if args.api_key and mode in ("agent", "accuracy", "vlm", "performance-n"):
+    if args.api_key and mode in ("agent", "accuracy", "vlm", "performance-vl", "performance-n"):
         MODEL_CFG_PARAMS["api_key"] = args.api_key
-    if args.path and mode in ("performance-c", "performance-n"):
+    if args.path and mode in ("performance-c", "performance-n", "performance-vl"):
         MODEL_CFG_PARAMS["path"] = args.path
 
 
@@ -2311,7 +2699,7 @@ def main():
         action="extend",
         default=None,
         help=(
-            "运行模式，支持 performance-c / performance-n / agent / accuracy / vlm 任意组合；"
+            "运行模式，支持 performance-c / performance-n / performance-vl / agent / accuracy / vlm 任意组合；"
             "可写 --mode agent performance-c，也可写 --mode agent,performance-c"
         ),
     )
@@ -2341,6 +2729,42 @@ def main():
                     help="vlm 模式: eval-batch-size，默认 vlm.eval_batch_size")
     ap.add_argument("--vlm-work-dir", default=None,
                     help="vlm 模式: 输出目录，默认 vlm.work_dir")
+    ap.add_argument("--perf-vl-dataset", default=None,
+                    help="performance-vl 模式: evalscope perf 数据集，默认 random_vl")
+    ap.add_argument("--perf-vl-concurrency", type=int, nargs="+", default=None,
+                    help="performance-vl 模式: 并发列表，默认 performance-vl.concurrencies")
+    ap.add_argument("--perf-vl-number", type=int, nargs="+", default=None,
+                    help="performance-vl 模式: 请求数；传一个值固定，传多个值与并发一一对应；0=自动")
+    ap.add_argument("--perf-vl-max-out-len", type=int, default=None,
+                    help="performance-vl 模式: 最大输出 token 数")
+    ap.add_argument("--perf-vl-min-out-len", type=int, default=None,
+                    help="performance-vl 模式: 最小输出 token 数")
+    ap.add_argument("--perf-vl-min-prompt-length", type=int, default=None,
+                    help="performance-vl 模式: 最小 prompt token 数")
+    ap.add_argument("--perf-vl-max-prompt-length", type=int, default=None,
+                    help="performance-vl 模式: 最大 prompt token 数")
+    ap.add_argument("--perf-vl-prefix-length", type=int, default=None,
+                    help="performance-vl 模式: 前缀缓存重复 token 数")
+    ap.add_argument("--perf-vl-image-width", type=int, default=None,
+                    help="performance-vl 模式: random_vl 图片宽度")
+    ap.add_argument("--perf-vl-image-height", type=int, default=None,
+                    help="performance-vl 模式: random_vl 图片高度")
+    ap.add_argument("--perf-vl-image-format", default=None,
+                    help="performance-vl 模式: random_vl 图片格式，默认 RGB")
+    ap.add_argument("--perf-vl-image-num", type=int, default=None,
+                    help="performance-vl 模式: 每条请求携带的图片数")
+    ap.add_argument("--perf-vl-image-patch-size", type=int, default=None,
+                    help="performance-vl 模式: random_vl 图片 patch 大小")
+    ap.add_argument("--perf-vl-request-rate", type=float, default=None,
+                    help="performance-vl 模式: 请求速率，-1=不限制")
+    ap.add_argument("--perf-vl-sleep-interval", type=float, default=None,
+                    help="performance-vl 模式: 多并发轮次之间的等待秒数")
+    ap.add_argument("--perf-vl-tokenizer-path", default=None,
+                    help="performance-vl 模式: tokenizer 路径；默认用 model_cfg_params.path")
+    ap.add_argument("--perf-vl-work-dir", default=None,
+                    help="performance-vl 模式: 压测输出目录，默认 performance-vl.work_dir")
+    ap.add_argument("--perf-vl-result-dir", default=None,
+                    help="performance-vl 模式: 汇总输出目录，默认 performance-vl.result_dir")
     ap.add_argument("--native-conversation-count", type=int, default=None,
                     help="native_multiturn: 取前 N 组有效多轮对话; 0=全部")
     ap.add_argument("--native-infer-mode", choices=["every", "last", "every_with_gt"], default=None,
@@ -2370,7 +2794,7 @@ def main():
     ap.add_argument("--model", dest="model", default=None, help="模型名")
     ap.add_argument("--host-ip", dest="host_ip", default=None, help="服务 IP")
     ap.add_argument("--host-port", dest="host_port", type=int, default=None, help="服务端口")
-    ap.add_argument("--api-key", dest="api_key", default=None, help="agent / accuracy / vlm / native_multiturn 模式 OpenAI API Key")
+    ap.add_argument("--api-key", dest="api_key", default=None, help="agent / accuracy / vlm / performance-vl / native_multiturn 模式 OpenAI API Key")
     ap.add_argument("--excel", default=None, help="Excel 输出路径 (默认当前文件夹下)")
     ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
     args = ap.parse_args()
@@ -2380,6 +2804,13 @@ def main():
     global ACCURACY_DATASET, ACCURACY_EVAL_BATCH_SIZE, ACCURACY_WORK_DIR
     global VLM_DATASET, VLM_DATASET_HUB, VLM_SUBSET_LIST, VLM_LIMIT, VLM_REPEATS
     global VLM_EVAL_BATCH_SIZE, VLM_WORK_DIR
+    global PERF_VL_DATASET, PERF_VL_CONCURRENCIES, PERF_VL_NUMBER
+    global PERF_VL_MAX_OUT_LEN, PERF_VL_MIN_OUT_LEN
+    global PERF_VL_MIN_PROMPT_LENGTH, PERF_VL_MAX_PROMPT_LENGTH, PERF_VL_PREFIX_LENGTH
+    global PERF_VL_IMAGE_WIDTH, PERF_VL_IMAGE_HEIGHT, PERF_VL_IMAGE_FORMAT
+    global PERF_VL_IMAGE_NUM, PERF_VL_IMAGE_PATCH_SIZE
+    global PERF_VL_REQUEST_RATE, PERF_VL_SLEEP_INTERVAL, PERF_VL_TOKENIZER_PATH
+    global PERF_VL_WORK_DIR, PERF_VL_RESULT_DIR
     global NATIVE_CONVERSATION_COUNT, NATIVE_INFER_MODE
     global NATIVE_WORK_DIR, NATIVE_RESULT_DIR, NATIVE_RAW_SHAREGPT_PATH
 
@@ -2428,6 +2859,47 @@ def main():
     if args.vlm_work_dir:
         VLM_WORK_DIR = args.vlm_work_dir
 
+    if args.perf_vl_dataset:
+        PERF_VL_DATASET = args.perf_vl_dataset
+    if args.perf_vl_concurrency:
+        PERF_VL_CONCURRENCIES = list(args.perf_vl_concurrency)
+    if args.perf_vl_number is not None:
+        PERF_VL_NUMBER = (
+            args.perf_vl_number[0]
+            if len(args.perf_vl_number) == 1
+            else list(args.perf_vl_number)
+        )
+    if args.perf_vl_max_out_len is not None:
+        PERF_VL_MAX_OUT_LEN = args.perf_vl_max_out_len
+    if args.perf_vl_min_out_len is not None:
+        PERF_VL_MIN_OUT_LEN = args.perf_vl_min_out_len
+    if args.perf_vl_min_prompt_length is not None:
+        PERF_VL_MIN_PROMPT_LENGTH = args.perf_vl_min_prompt_length
+    if args.perf_vl_max_prompt_length is not None:
+        PERF_VL_MAX_PROMPT_LENGTH = args.perf_vl_max_prompt_length
+    if args.perf_vl_prefix_length is not None:
+        PERF_VL_PREFIX_LENGTH = args.perf_vl_prefix_length
+    if args.perf_vl_image_width is not None:
+        PERF_VL_IMAGE_WIDTH = args.perf_vl_image_width
+    if args.perf_vl_image_height is not None:
+        PERF_VL_IMAGE_HEIGHT = args.perf_vl_image_height
+    if args.perf_vl_image_format:
+        PERF_VL_IMAGE_FORMAT = args.perf_vl_image_format
+    if args.perf_vl_image_num is not None:
+        PERF_VL_IMAGE_NUM = args.perf_vl_image_num
+    if args.perf_vl_image_patch_size is not None:
+        PERF_VL_IMAGE_PATCH_SIZE = args.perf_vl_image_patch_size
+    if args.perf_vl_request_rate is not None:
+        PERF_VL_REQUEST_RATE = args.perf_vl_request_rate
+    if args.perf_vl_sleep_interval is not None:
+        PERF_VL_SLEEP_INTERVAL = args.perf_vl_sleep_interval
+    if args.perf_vl_tokenizer_path:
+        PERF_VL_TOKENIZER_PATH = args.perf_vl_tokenizer_path
+    if args.perf_vl_work_dir:
+        PERF_VL_WORK_DIR = args.perf_vl_work_dir
+    if args.perf_vl_result_dir:
+        PERF_VL_RESULT_DIR = args.perf_vl_result_dir
+
     cli_modes = _parse_mode_list(args.mode, "命令行 --mode") if args.mode else []
     run_modes = cli_modes or RUN_MODES
     print("运行模式 = {}（按顺序执行）".format(" -> ".join(run_modes)))
@@ -2442,6 +2914,8 @@ def main():
             run_accuracy_mode()
         elif mode == "vlm":
             run_vlm_mode()
+        elif mode == "performance-vl":
+            run_performance_vl_mode()
         elif mode in ("performance-c", "performance-n"):
             run_performance_mode(args)
         else:

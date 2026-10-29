@@ -2,13 +2,14 @@
 
 ## 1. 配置文件
 
-配置已拆分为一个公共文件和五个模式专属文件：
+配置已拆分为一个公共文件和六个模式专属文件：
 
 ```text
 cfg-normal.cfg       公共配置
 agent.cfg            Agent 模式专属配置
 accuracy.cfg         Accuracy 模式专属配置
 vlm.cfg              VLM 多模态精度模式专属配置
+performance-vl.cfg   VLM 多模态性能压测模式专属配置
 performance-c.cfg    Performance concat 拼接压测配置
 performance-n.cfg    Performance native 原生多轮压测配置
 ```
@@ -146,13 +147,46 @@ performance-n.cfg    Performance native 原生多轮压测配置
 - `limit`：按子集生效；`0` 全量；整数为前 N 条；小数为百分比 `(0, 1]`
 - `work_dir`：evalscope 会在其下按时间戳建子目录
 
+### 1.7 `performance-vl.cfg`
+
+```jsonc
+{
+  "dataset": "random_vl",
+  "concurrencies": [1, 8, 16, 32],
+  "number": 0,
+  "max_out_len": 128,
+  "min_out_len": 128,
+  "min_prompt_length": 100,
+  "max_prompt_length": 100,
+  "prefix_length": 0,
+  "image_width": 512,
+  "image_height": 512,
+  "image_format": "RGB",
+  "image_num": 1,
+  "image_patch_size": 28,
+  "request_rate": -1,
+  "sleep_interval": 5,
+  "tokenizer_path": "",
+  "work_dir": "outputs/performance/vl",
+  "result_dir": "results/performance/vl",
+  "extra_args": {"ignore_eos": true}
+}
+```
+
+- `dataset`：默认 `random_vl`，evalscope 在线生成随机图片请求
+- `number`：每个并发的请求数；`0` 自动取 `max(20, 并发*10)`，也可写成与 `concurrencies` 等长的数组
+- `image_*`：图片尺寸、格式、数量和 patch 大小，直接决定视觉 token 量
+- `tokenizer_path`：留空时回退到 `model_cfg_params.path`；测试机看不到模型路径时需显式指定
+- `extra_args`：传给 `evalscope perf --extra-args`，`ignore_eos=true` 保证输出长度固定
+
 ## 2. 运行模式
 
-支持五个直接模式：
+支持六个直接模式：
 
 ```text
 performance-c
 performance-n
+performance-vl
 agent
 accuracy
 vlm
@@ -198,7 +232,15 @@ python3 run_perf.py --mode vlm
 
 用于 evalscope 多模态精度测试，默认 MMMU。评测完成后会打印总体 acc 和各子集 acc，并在评测目录下生成 `vlm_summary.json` / `vlm_summary.csv`。
 
-### 2.6 混合运行
+### 2.6 Performance VL
+
+```bash
+python3 run_perf.py --mode performance-vl
+```
+
+用于 evalscope 多模态性能压测，默认 `random_vl`。会按 `concurrencies` 依次压测，结束后打印各并发的吞吐、TTFT、TPOT、Latency，并把含 P99 的汇总写到 `results/performance/vl/`。
+
+### 2.7 混合运行
 
 支持任意组合：
 
@@ -289,7 +331,29 @@ python3 run_perf.py --mode vlm --vlm-dataset-hub huggingface
 
 注意：被测 VLM 服务需要支持 OpenAI 兼容的多模态消息（`image_url` 传入 base64 data URL）。VLM 模式依赖 evalscope ≥ 1.6，首次评测会把 MMMU 数据集下载到 `~/.cache/modelscope/datasets`。
 
-### 3.6 预生成 performance-c 数据集
+### 3.6 Performance VL
+
+```bash
+# 默认：1/8/16/32 并发，各并发请求数自动取 max(20, 并发*10)
+python3 run_perf.py --mode performance-vl
+
+# 冒烟：1、8 并发，各 50 条请求，512x512 单图
+python3 run_perf.py \
+  --mode performance-vl \
+  --perf-vl-concurrency 1 8 \
+  --perf-vl-number 50 \
+  --perf-vl-image-width 512 \
+  --perf-vl-image-height 512
+
+# 测试机看不到模型路径时显式指定 tokenizer
+python3 run_perf.py \
+  --mode performance-vl \
+  --perf-vl-tokenizer-path /export/home/models/Qwen3-VL-32B
+```
+
+注意：`random_vl` 依赖 tokenizer 统计 prompt 长度，默认回退到公共 `model_cfg_params.path`；图片会以 base64 发送，带宽和显存占用随图片数量/尺寸增长。该模式依赖 `evalscope[perf]`，`auto_prepare=true` 时缺失会自动安装。
+
+### 3.7 预生成 performance-c 数据集
 
 ```bash
 python3 gen_datasets.py --dry-run
@@ -306,12 +370,15 @@ outputs/performance/native_multiturn/ # performance-n AISBench 输出
 outputs/agent/          # agent 输出
 outputs/accuracy/       # accuracy 输出
 outputs/vlm/{timestamp}/ # vlm 输出（含 vlm_summary.json / vlm_summary.csv）
+outputs/performance/vl/{timestamp}/ # performance-vl 压测输出
+results/performance/vl/ # performance-vl 汇总 CSV / JSON
 outputs/agent_configs/  # agent 自动生成的 ais_bench 配置
 raw_datasets/           # 自动下载的原始数据
 ```
 
 ## 5. 版本
 
+- v1.5.1：新增 VLM 多模态性能压测模式（random_vl）
 - v1.5.0：新增 VLM 多模态精度模式（MMMU）
 - v1.4.0：配置拆分为公共文件和模式专属文件，Performance 拆分为 `performance-c` / `performance-n`
 - v1.3.1：Performance concat / native 配置完全隔离
