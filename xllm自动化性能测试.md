@@ -508,7 +508,7 @@ raw_datasets/           # 自动下载的原始数据
 预热日志示例：
 
 ```text
-  [warm] ShareGPT-in16384-bs32-8并发 预热: 16 请求 / 2 轮, 并发 8, 输出上限 1024 tokens
+  [warm] ShareGPT-in16384-bs80-8并发 预热: 16 请求 / 2 轮, 并发 8, 输出上限 1024 tokens
   [warm] 第 1/2 轮: 8/8 成功, 平均 12.41s, TTFT 1.83s
   [warm] 第 2/2 轮: 8/8 成功, 平均 4.06s, TTFT 1.79s
   [warm] 冷热差: 首轮 12.41s -> 末轮 4.06s (3.1x)
@@ -528,6 +528,7 @@ python3 run_perf.py --mode performance-c --ais-num-warmups 0     # 只保留内�
 
 ## 6. 版本
 
+- v1.6.2：压测数据集条数从 并发*4 改为 并发*10，减少单条请求波动
 - v1.6.1：完善性能测试预热，按用例并发预热多轮，新增 warmup 配置与冷热差输出
 - v1.6.0：新增 LiveCodeBench 代码生成精度模式，支持按难度筛选，题库自动下载
 - v1.5.2：VLM 精度默认数据集改为 MMMU-Pro，支持 4 选项 / 10 选项 / vision

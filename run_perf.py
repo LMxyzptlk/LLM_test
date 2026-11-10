@@ -44,7 +44,7 @@ JSON 用例文件格式 (序号->用例串 映射):
   - dataset_type: 可选, gsm/sharegpt/swebench, 省略默认 sharegpt
   - 输入长度:    数据集名里的 in{LEN}
   - 输出长度:    写入 vllm_api_general_stream.py 的 max_out_len
-  - 并发:       即 batch_size; 数据集条数 bs = 并发 * 4
+  - 并发:       即 batch_size; 数据集条数 bs = 并发 * 10
   - request_rate: 写入 vllm_api_general_stream.py 的 request_rate (0=尽量打满)
   - pfx (可选): 前缀缓存重复率%, 指定则用 {数据集}-in{LEN}-bs{BS}-pfx{N}.jsonl
                 省略或 0 则用普通数据集 {数据集}-in{LEN}-bs{BS}.jsonl
@@ -322,6 +322,10 @@ DEFAULT_MAX_OUT_LEN = _CONCAT_CFG.get("default_max_out_len")
 DEFAULT_REQUEST_RATE = _CONCAT_CFG.get("default_request_rate")
 DEFAULT_PFX = _CONCAT_CFG.get("default_pfx")
 DATASET_TYPES = _CONCAT_CFG.get("dataset_types", ["sharegpt"])
+
+# 压测数据集条数 = 并发 * 该系数。
+# 注意: gen_datasets.py 里有一份同值常量，改这里要同步改那边。
+DATASET_BS_MULTIPLIER = 10
 
 # Performance 预热配置（concat / native 各自独立，留空用默认值）
 CONCAT_WARMUP = dict(_CONCAT_CFG.get("warmup", {}) or {})
@@ -2193,9 +2197,9 @@ def _dataset_filename(dataset_type, input_len, bs, pfx=None):
 def find_dataset(dataset_type, input_len, concurrency, pfx=None):
     """在 DATASET_DIR 下查找数据集文件, 返回 (文件名, 绝对路径) 或 (None, None).
 
-    bs = 并发 * 4。支持 gsm/sharegpt/swebench 三种数据集类型。
+    bs = 并发 * 10。支持 gsm/sharegpt/swebench 三种数据集类型。
     """
-    bs = concurrency * 4
+    bs = concurrency * DATASET_BS_MULTIPLIER
     ds_name = _dataset_filename(dataset_type, input_len, bs, pfx)
     ds_path = os.path.join(DATASET_DIR, ds_name)
     if os.path.exists(ds_path):
@@ -2208,7 +2212,7 @@ def generate_dataset(dataset_type, input_len, concurrency, pfx=None):
 
     生成后再次查找确认文件存在; 若仍不存在则抛异常。
     """
-    bs = concurrency * 4
+    bs = concurrency * DATASET_BS_MULTIPLIER
     ds_name = _dataset_filename(dataset_type, input_len, bs, pfx)
 
     _, _, raw_path_key, ds_type_arg = _DATASET_INFO[dataset_type]
@@ -2891,7 +2895,7 @@ def run_case(case, skip_run=False):
     request_rate = case["request_rate"]
     pfx = case["pfx"]
 
-    bs = concurrency * 4
+    bs = concurrency * DATASET_BS_MULTIPLIER
     # 用例命名: 数据集类型 + 文件名 + 并发
     ds_stub = _dataset_filename(dataset_type, input_len, bs, pfx)
     # 去掉 .jsonl 后缀

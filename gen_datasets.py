@@ -29,6 +29,10 @@ _DATASET_INFO = {
     "swebench": ("Swebench-in", "raw_swebench_path", "SWEBENCH"),
 }
 
+# 数据集条数 = 并发 * 该系数；必须和 run_perf.py 里的 DATASET_BS_MULTIPLIER 保持一致，
+# 否则这里预生成的文件名和 run_perf.py 要找的对不上。
+DATASET_BS_MULTIPLIER = 10
+
 
 def load_cfg():
     with open(CFG_NORMAL_PATH, "r", encoding="utf-8") as f:
@@ -74,7 +78,7 @@ def main():
             continue
         for il in input_lens:
             for c in concurrencies:
-                bs = c * 4
+                bs = c * DATASET_BS_MULTIPLIER
                 for pfx in pfx_list:
                     fname = dataset_filename(dt, il, bs, pfx)
                     fpath = os.path.join(dataset_dir, fname)
