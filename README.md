@@ -2,6 +2,13 @@
 
 ## 版本历史
 
+### v1.6.3 — 2026-11-12
+
+- **精度评测单条失败不再中断整轮**
+  - `evalscope eval` 默认 `ignore_errors=false`：任意一条样本超时/报错就 `raise`，整个评测退出，连 `reports/` 都不生成
+  - 新增 `accuracy.ignore_errors` / `vlm.ignore_errors`（默认 `true`），对应 `evalscope eval --ignore-errors`
+  - 失败样本计入 errored，评测继续跑完并正常出报告
+
 ### v1.6.2 — 2026-11-10
 
 - **压测数据集条数从 `并发 × 4` 改为 `并发 × 10`**
@@ -219,6 +226,7 @@ Accuracy 模式专属配置：
 {
   "dataset": "gpqa_diamond",
   "eval_batch_size": 8,
+  "ignore_errors": true,      // 单条样本失败时继续跑完并出报告
   "work_dir": "outputs/accuracy",
   "generation_config": {
     "temperature": 1.0,
@@ -250,6 +258,7 @@ VLM 多模态精度模式专属配置：
   "limit": 0,                 // 每个子集：0=全量；整数=前 N 条；小数=百分比
   "repeats": 1,
   "eval_batch_size": 4,
+  "ignore_errors": true,      // 单条样本失败时继续跑完并出报告
   "work_dir": "outputs/vlm",
   "generation_config": {
     "temperature": 0.0,

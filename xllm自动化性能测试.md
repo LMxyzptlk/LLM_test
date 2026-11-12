@@ -65,6 +65,7 @@ performance-n.cfg    Performance native 原生多轮压测配置
 {
   "dataset": "gpqa_diamond",
   "eval_batch_size": 8,
+  "ignore_errors": true,      // 单条样本失败时继续跑完并出报告
   "work_dir": "outputs/accuracy",
   "generation_config": {
     "temperature": 1.0,
@@ -155,6 +156,7 @@ performance-n.cfg    Performance native 原生多轮压测配置
   "limit": 0,
   "repeats": 1,
   "eval_batch_size": 4,
+  "ignore_errors": true,      // 单条样本失败时继续跑完并出报告
   "work_dir": "outputs/vlm",
   "generation_config": {
     "temperature": 0.0,
@@ -528,6 +530,7 @@ python3 run_perf.py --mode performance-c --ais-num-warmups 0     # 只保留内�
 
 ## 6. 版本
 
+- v1.6.3：精度评测单条失败不再中断整轮（accuracy/vlm 新增 ignore_errors，默认开启）
 - v1.6.2：压测数据集条数从 并发*4 改为 并发*10，减少单条请求波动
 - v1.6.1：完善性能测试预热，按用例并发预热多轮，新增 warmup 配置与冷热差输出
 - v1.6.0：新增 LiveCodeBench 代码生成精度模式，支持按难度筛选，题库自动下载

@@ -226,11 +226,12 @@ def _load_cfg():
     }
     allowed_accuracy_keys = {
         "dataset", "eval_batch_size", "work_dir", "generation_config", "dataset_args",
+        "ignore_errors",
     }
     allowed_vlm_keys = {
         "dataset", "dataset_format", "dataset_hub", "subset_list", "limit", "repeats",
         "eval_batch_size", "work_dir", "generation_config", "dataset_args",
-        "model_cfg_params",
+        "model_cfg_params", "ignore_errors",
     }
     allowed_lcb_keys = {
         "data_file", "data_url", "source_dir", "difficulties", "limit", "concurrency",
@@ -363,6 +364,7 @@ AIS_NUM_WARMUPS_OVERRIDE = None
 # Accuracy 精度测试配置
 ACCURACY_DATASET = _ACCURACY_CFG.get("dataset", "gpqa_diamond")
 ACCURACY_EVAL_BATCH_SIZE = int(_ACCURACY_CFG.get("eval_batch_size", 8))
+ACCURACY_IGNORE_ERRORS = bool(_ACCURACY_CFG.get("ignore_errors", True))
 ACCURACY_WORK_DIR = _ACCURACY_CFG.get("work_dir", "outputs/accuracy")
 ACCURACY_AUTO_PREPARE = bool(_ACCURACY_CFG.get("auto_prepare", True))
 _ACCURACY_MODEL_CFG_PARAMS = dict(_ACCURACY_CFG.get("model_cfg_params", {}))
@@ -388,6 +390,7 @@ VLM_SUBSET_LIST = list(_VLM_CFG.get("subset_list", []) or [])
 VLM_LIMIT = _VLM_CFG.get("limit", 0)
 VLM_REPEATS = int(_VLM_CFG.get("repeats", 1))
 VLM_EVAL_BATCH_SIZE = int(_VLM_CFG.get("eval_batch_size", 4))
+VLM_IGNORE_ERRORS = bool(_VLM_CFG.get("ignore_errors", True))
 VLM_WORK_DIR = _VLM_CFG.get("work_dir", "outputs/vlm")
 VLM_AUTO_PREPARE = bool(_VLM_CFG.get("auto_prepare", True))
 _VLM_MODEL_CFG_PARAMS = dict(_VLM_CFG.get("model_cfg_params", {}))
@@ -1030,6 +1033,8 @@ def run_accuracy_mode():
             ACCURACY_DATASET_ARGS, "dataset_args"
         ),
     ]
+    if ACCURACY_IGNORE_ERRORS:
+        cmd.append("--ignore-errors")
     print("  [accuracy] CMD: {}".format(" ".join(cmd)))
     _run_checked(cmd, cwd=work_dir, label="evalscope accuracy")
     print("  [accuracy] 精度测试完成")
@@ -1591,6 +1596,8 @@ def run_vlm_mode():
         limit=limit,
         repeats=VLM_REPEATS,
     )
+    if VLM_IGNORE_ERRORS:
+        cmd.append("--ignore-errors")
     print("  [vlm] CMD: {}".format(" ".join(cmd)))
     _run_checked(cmd, cwd=work_dir, label="evalscope vlm")
 
