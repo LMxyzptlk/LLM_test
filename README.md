@@ -2,6 +2,16 @@
 
 ## 版本历史
 
+### v1.7.0 — 2026-11-13
+
+- **用例数支持自由配置为 n × 并发数**
+  - 新增 dataset_bs_multiplier 配置和 --bs-multiplier 参数，默认 n=10
+  - 数据集预生成、查找与压测使用一致的倍数配置
+- **输出采信率和 RR（请求速率）**
+  - 采信率按 Σaccepted / Σproposed 计算，仅读取单个 rank 日志
+  - 支持异步日志等待与记录数不匹配告警；启用采集时写入 Excel 汇总
+  - RR 单独打印并保留在汇总中，用例名兼容历史格式
+
 ### v1.6.3 — 2026-11-12
 
 - **精度评测单条失败不再中断整轮**
@@ -462,3 +472,16 @@ results/performance/vl/ # performance-vl 汇总 CSV / JSON
 outputs/agent_configs/  # agent 自动生成的 ais_bench 配置
 raw_datasets/           # 自动下载的原始数据
 ```
+
+## 拼接压测用例数、采信率与 RR
+
+在 performance-c.cfg 设置 dataset_bs_multiplier（正整数，默认 10），数据集样本数 = n × 并发数。gen_datasets.py 和 run_perf.py 使用同一配置；运行压测时可用 --bs-multiplier 覆盖。
+
+示例：python3 run_perf.py --mode performance-c -i 8192 -c 8 --bs-multiplier 3 --request-rate 0.5
+此时使用 24 条样本，RR（request_rate，请求速率）为 0.5。用例名保留历史格式，RR 单独打印并写入汇总中的请求速率字段。
+
+采信率默认关闭。在 performance-c.cfg 设置 acceptance.enabled: true 并将 acceptance.log_glob（默认 rank_0.log）改为压测机可读取的 DECODE 单 rank 日志，或直接通过 --acceptance-log-glob 开启并指定路径。远端日志需事先挂载或同步。目录参数仅查找 rank_0.log；glob 多匹配时明确提示并只读取最新的一个文件，不聚合多个 rank。
+
+统计正式压测新增完整日志行内的 speculative_accepted_tokens 和 speculative_proposed_tokens，使用 Σaccepted / Σproposed × 100%，不使用请求 rate 的算术平均。仅有 rate、计数不合法或日志不完整的记录不参与计算；分母为零时留空。启用采集才在 Excel 汇总添加采信率列。
+
+结束后先等待 acceptance.settle_seconds（默认 1 秒），随后轮询至有效记录数达到预期数据集样本数，或达到 acceptance.max_wait_seconds（总等待上限，默认 30 秒）。数量不匹配时打印实际/预期记录数与告警，返回值可能仅覆盖部分请求。建议关闭 ais_bench 自带预热（--ais-num-warmups 0），使用独占服务日志，避免其他流量和工具内部预热污染统计。数量相等仍不能保证请求一一对应；日志需在采集期间保持路径稳定，避免轮转。脚本自身的预热在日志快照前完成。

@@ -44,7 +44,7 @@ JSON 用例文件格式 (序号->用例串 映射):
   - dataset_type: 可选, gsm/sharegpt/swebench, 省略默认 sharegpt
   - 输入长度:    数据集名里的 in{LEN}
   - 输出长度:    写入 vllm_api_general_stream.py 的 max_out_len
-  - 并发:       即 batch_size; 数据集条数 bs = 并发 * 10
+  - 并发:       即 batch_size; 数据集条数 bs = 并发 × dataset_bs_multiplier (默认 10)
   - request_rate: 写入 vllm_api_general_stream.py 的 request_rate (0=尽量打满)
   - pfx (可选): 前缀缓存重复率%, 指定则用 {数据集}-in{LEN}-bs{BS}-pfx{N}.jsonl
                 省略或 0 则用普通数据集 {数据集}-in{LEN}-bs{BS}.jsonl
@@ -241,9 +241,10 @@ def _load_cfg():
     }
     allowed_performance_c_keys = {
         "dataset_dir", "result_dir", "input_len", "concurrencies",
+        "dataset_bs_multiplier",
         "default_max_out_len", "default_request_rate", "default_pfx",
         "dataset_types", "raw_gsm_path", "raw_sharegpt_path", "raw_swebench_path",
-        "warmup", "ais_num_warmups",
+        "warmup", "acceptance", "ais_num_warmups",
     }
     allowed_performance_vl_keys = {
         "dataset", "concurrencies", "number", "max_out_len", "min_out_len",
@@ -323,14 +324,19 @@ DEFAULT_MAX_OUT_LEN = _CONCAT_CFG.get("default_max_out_len")
 DEFAULT_REQUEST_RATE = _CONCAT_CFG.get("default_request_rate")
 DEFAULT_PFX = _CONCAT_CFG.get("default_pfx")
 DATASET_TYPES = _CONCAT_CFG.get("dataset_types", ["sharegpt"])
-
-# 压测数据集条数 = 并发 * 该系数。
-# 注意: gen_datasets.py 里有一份同值常量，改这里要同步改那边。
-DATASET_BS_MULTIPLIER = 10
+DATASET_BS_MULTIPLIER = int(_CONCAT_CFG.get("dataset_bs_multiplier", 10))
+DATASET_BS_MULTIPLIER_OVERRIDE = None
 
 # Performance 预热配置（concat / native 各自独立，留空用默认值）
 CONCAT_WARMUP = dict(_CONCAT_CFG.get("warmup", {}) or {})
 CONCAT_AIS_NUM_WARMUPS = int(_CONCAT_CFG.get("ais_num_warmups", 1))
+
+# 数据采信率（投机解码接受率）采集配置；log_glob 为空表示不采集
+_ACCEPTANCE_CFG = dict(_CONCAT_CFG.get("acceptance", {}) or {})
+ACCEPTANCE_LOG_GLOB = (_ACCEPTANCE_CFG.get("log_glob", "rank_0.log") or "") if _ACCEPTANCE_CFG.get("enabled", False) else ""
+ACCEPTANCE_SETTLE_SECONDS = float(_ACCEPTANCE_CFG.get("settle_seconds", 1.0))
+ACCEPTANCE_MAX_WAIT_SECONDS = max(0.0, float(_ACCEPTANCE_CFG.get("max_wait_seconds", 30.0)))
+ACCEPTANCE_LOG_GLOB_OVERRIDE = None
 
 # Performance native_multiturn 专属配置
 _NATIVE_MULTITURN_CFG = _PERFORMANCE_CFG.get("native_multiturn", {})
@@ -2187,6 +2193,34 @@ def set_model_cfg(params):
         print("  [cfg] 配置 -> {}".format(", ".join(changed)))
 
 
+def _read_model_cfg_field(field, default=None):
+    """读取 ais_bench 模型配置里某个字段的当前值。"""
+    if not MODEL_CFG or not os.path.exists(MODEL_CFG):
+        return default
+    try:
+        with open(MODEL_CFG, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return default
+    match = re.search(r"{}\s*=\s*([^,\n#]+)".format(re.escape(field)), content)
+    if not match:
+        return default
+    try:
+        return float(match.group(1).strip())
+    except ValueError:
+        return default
+
+
+def _format_rr(value):
+    """rr 的展示形式：0.0 -> 0, 2.5 -> 2.5, None -> na。"""
+    if value is None:
+        return "na"
+    number = float(value)
+    if number == int(number):
+        return str(int(number))
+    return "{:g}".format(number)
+
+
 def _dataset_filename(dataset_type, input_len, bs, pfx=None):
     """根据数据集类型构造文件名。
 
@@ -2201,12 +2235,20 @@ def _dataset_filename(dataset_type, input_len, bs, pfx=None):
         return "{}{}-bs{}.jsonl".format(prefix, input_len, bs)
 
 
+def _dataset_bs(concurrency):
+    """数据集条数 bs = 并发 × dataset_bs_multiplier（默认 10）。"""
+    multiplier = DATASET_BS_MULTIPLIER_OVERRIDE
+    if multiplier is None:
+        multiplier = DATASET_BS_MULTIPLIER
+    return int(concurrency) * max(1, int(multiplier))
+
+
 def find_dataset(dataset_type, input_len, concurrency, pfx=None):
     """在 DATASET_DIR 下查找数据集文件, 返回 (文件名, 绝对路径) 或 (None, None).
 
-    bs = 并发 * 10。支持 gsm/sharegpt/swebench 三种数据集类型。
+    bs = 并发 × dataset_bs_multiplier（默认 10）。支持 gsm/sharegpt/swebench 三种数据集类型。
     """
-    bs = concurrency * DATASET_BS_MULTIPLIER
+    bs = _dataset_bs(concurrency)
     ds_name = _dataset_filename(dataset_type, input_len, bs, pfx)
     ds_path = os.path.join(DATASET_DIR, ds_name)
     if os.path.exists(ds_path):
@@ -2219,7 +2261,7 @@ def generate_dataset(dataset_type, input_len, concurrency, pfx=None):
 
     生成后再次查找确认文件存在; 若仍不存在则抛异常。
     """
-    bs = concurrency * DATASET_BS_MULTIPLIER
+    bs = _dataset_bs(concurrency)
     ds_name = _dataset_filename(dataset_type, input_len, bs, pfx)
 
     _, _, raw_path_key, ds_type_arg = _DATASET_INFO[dataset_type]
@@ -2533,7 +2575,7 @@ def safe_sheet_name(name):
     return name[:31]
 
 
-def write_excel(cases, out_path=None):
+def write_excel(cases, out_path=None, include_acceptance=False):
     """cases: list of dict(case_name, batch_size, summary, perf_rows, common_rows, status, error, ...).
     out_path: 输出路径, 默认用全局 EXCEL_PATH。
     """
@@ -2553,6 +2595,8 @@ def write_excel(cases, out_path=None):
         "平均E2EL(ms)", "平均TTFT(ms)", "平均TPOT(ms)", "平均ITL(ms)",
         "平均输出token吞吐(token/s)", "总吞吐(token/s)", "请求吞吐(req/s)", "总请求数",
     ]
+    if include_acceptance:
+        headers.append("数据采信率(%)")
     ws.append(headers)
     for c in ws[1]:
         c.font = Font(bold=True)
@@ -2574,11 +2618,13 @@ def write_excel(cases, out_path=None):
             clean_cell(s.get("总吞吐(token/s)")),
             clean_cell(s.get("请求吞吐(req/s)")),
             clean_cell(s.get("总请求数")),
-        ])
+        ] + ([clean_cell(case.get("acceptance_mean"))] if include_acceptance else []))
     for col in "ABCDEFGHIJK":
         ws.column_dimensions[col].width = 22
     for col in "LMNO":
         ws.column_dimensions[col].width = 22
+    if include_acceptance:
+        ws.column_dimensions["P"].width = 22
 
     # ---- 每个用例一个明细 sheet ----
     for case in cases:
@@ -2892,6 +2938,93 @@ def _warmup_before_case(cfg, label, dataset_path, concurrency, out_len):
     )
 
 
+# -------------------- 数据采信率（投机解码接受率） --------------------
+# xllm 在每条请求结束时输出:
+#   ..., speculative_accepted_tokens: 853, speculative_proposed_tokens: 875,
+#   speculative_token_acceptance_rate: 0.9749
+# 按 token 总数加权，不使用请求 rate 的算术平均。
+_ACCEPTED_RE = re.compile(r"speculative_accepted_tokens:\s*([0-9]+)")
+_PROPOSED_RE = re.compile(r"speculative_proposed_tokens:\s*([0-9]+)")
+
+
+def _acceptance_log_glob():
+    """返回生效的接受率日志 glob（命令行优先）。"""
+    if ACCEPTANCE_LOG_GLOB_OVERRIDE is not None:
+        return ACCEPTANCE_LOG_GLOB_OVERRIDE
+    return ACCEPTANCE_LOG_GLOB
+
+
+def _resolve_acceptance_logs():
+    """只读一个日志：目录默认取 rank_0.log；glob 多匹配时选最新文件。"""
+    pattern = _acceptance_log_glob()
+    if not pattern:
+        return []
+    if os.path.isdir(pattern):
+        pattern = os.path.join(pattern, "rank_0.log")
+    candidates = list({os.path.realpath(p) for p in glob.glob(pattern)
+                       if os.path.isfile(p)})
+    if not candidates:
+        return []
+    latest = max(candidates, key=lambda p: (os.path.getmtime(p), p))
+    if len(candidates) > 1:
+        print("  [acc] 多个日志匹配，仅使用最新文件: {}".format(latest))
+    return [latest]
+
+
+def _acceptance_offsets(files):
+    """记录每个日志文件当前大小，作为本用例的读取起点。"""
+    offsets = {}
+    for path in files:
+        try:
+            offsets[path] = os.path.getsize(path)
+        except OSError:
+            offsets[path] = 0
+    return offsets
+
+
+def _collect_acceptance(offsets, expected_requests=None):
+    """等待异步日志，返回 (sum(accepted)/sum(proposed)*100, 有效记录数)。"""
+    if not offsets:
+        return None, 0
+    deadline = time.monotonic() + ACCEPTANCE_MAX_WAIT_SECONDS
+    if ACCEPTANCE_SETTLE_SECONDS > 0:
+        time.sleep(min(ACCEPTANCE_SETTLE_SECONDS, ACCEPTANCE_MAX_WAIT_SECONDS))
+    while True:
+        accepted_total = proposed_total = n = 0
+        for path, offset in offsets.items():
+            try:
+                size = os.path.getsize(path)
+                with open(path, "rb") as f:
+                    f.seek(offset if size >= offset else 0)
+                    chunk = f.read().decode("utf-8", "ignore")
+            except OSError:
+                continue
+            for line in chunk.splitlines(keepends=True):
+                if not line.endswith("\n"):
+                    continue
+                accepted = _ACCEPTED_RE.search(line)
+                proposed = _PROPOSED_RE.search(line)
+                if not accepted or not proposed:
+                    continue
+                a, p = int(accepted.group(1)), int(proposed.group(1))
+                if a > p:
+                    continue
+                accepted_total += a
+                proposed_total += p
+                n += 1
+        if expected_requests is None or n >= expected_requests:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.5, remaining))
+    if expected_requests is not None and n != expected_requests:
+        print("  [acc] 警告: 有效日志数 {}/{}；统计可能不完整或包含其他请求。".format(
+            n, expected_requests))
+    rate = accepted_total / proposed_total * 100.0 if proposed_total else None
+    return rate, n
+
+
 # -------------------- 主流程 --------------------
 def run_case(case, skip_run=False):
     """跑一个用例。case: dict from parse_case_str / load_cases."""
@@ -2902,8 +3035,12 @@ def run_case(case, skip_run=False):
     request_rate = case["request_rate"]
     pfx = case["pfx"]
 
-    bs = concurrency * DATASET_BS_MULTIPLIER
-    # 用例命名: 数据集类型 + 文件名 + 并发
+    bs = _dataset_bs(concurrency)
+    # rr 未显式指定时，记录 ais_bench 配置里实际会用的值
+    effective_rr = request_rate
+    if effective_rr is None:
+        effective_rr = _read_model_cfg_field("request_rate")
+    # 保留旧用例名，RR 单独展示，兼容历史结果对账
     ds_stub = _dataset_filename(dataset_type, input_len, bs, pfx)
     # 去掉 .jsonl 后缀
     if ds_stub.endswith(".jsonl"):
@@ -2911,19 +3048,23 @@ def run_case(case, skip_run=False):
     case_name = "{}-{}并发".format(ds_stub, concurrency)
     print("\n========== 用例 #{}: {} ==========".format(case.get("seq", ""), case_name))
 
+    print("  [cfg] RR = {}".format(_format_rr(effective_rr)))
+
     result = {
         "case_name": case_name,
         "dataset_type": dataset_type,
         "input_len": input_len,
         "out_len": out_len,
         "concurrency": concurrency,
-        "request_rate": request_rate,
+        "request_rate": effective_rr,
         "pfx": pfx,
         "summary": None,
         "perf_rows": [],
         "common_rows": [],
         "status": "failed",
         "error": "",
+        "acceptance_mean": None,
+        "acceptance_n": 0,
     }
 
     try:
@@ -2945,11 +3086,20 @@ def run_case(case, skip_run=False):
             )
 
         # 3) 改动态配置 (max_out_len + request_rate + batch_size，每个用例不同)
-        cfg = {"max_out_len": out_len, "request_rate": request_rate, "batch_size": concurrency}
+        cfg = {"max_out_len": out_len, "request_rate": effective_rr, "batch_size": concurrency}
         set_model_cfg(cfg)
 
         # 4) 绑定数据集
         bind_dataset(ds_name)
+
+        # 记录接受率日志偏移：预热已结束，只统计本用例正式压测新增的请求
+        acceptance_offsets = {}
+        if not skip_run and _acceptance_log_glob():
+            acceptance_logs = _resolve_acceptance_logs()
+            if acceptance_logs:
+                acceptance_offsets = _acceptance_offsets(acceptance_logs)
+            else:
+                print("  [acc] 未找到接受率日志: {}".format(_acceptance_log_glob()))
 
         before_dirs = set(
             d for d in os.listdir(OUTPUTS_ROOT)
@@ -2963,6 +3113,14 @@ def run_case(case, skip_run=False):
             rc, _ = run_ais_bench()
             if rc != 0:
                 raise RuntimeError("ais_bench 退出码 {}".format(rc))
+            if acceptance_offsets:
+                mean, n = _collect_acceptance(acceptance_offsets, expected_requests=bs)
+                result["acceptance_mean"] = mean
+                result["acceptance_n"] = n
+                if mean is None:
+                    print("  [acc] 未采集到有效 token 计数（不回退到 rate 算术平均）")
+                else:
+                    print("  [acc] Token 加权采信率: {:.2f}% ({} 条日志记录)".format(mean, n))
             result_dir = find_latest_result(before_dirs)
 
         if not result_dir:
@@ -3295,6 +3453,7 @@ def run_performance_mode(args):
     )
 
     print("数据集目录 = {}".format(DATASET_DIR))
+    print("数据采信率日志 = {}".format(_acceptance_log_glob() or "(未配置)"))
     print("执行目录(cwd) = {}".format(RUN_CWD))
     print("Excel 输出 = {}".format(EXCEL_PATH))
     active = {k: v for k, v in MODEL_CFG_PARAMS.items() if v is not None}
@@ -3358,20 +3517,23 @@ def run_performance_mode(args):
             PERFORMANCE_RESULT_DIR,
             "性能测试结果_{}_in{}{}_{}.xlsx".format(dt, input_len, pfx_tag, timestamp),
         )
-        write_excel(group_results, out_path=group_path)
+        write_excel(group_results, out_path=group_path,
+                    include_acceptance=bool(_acceptance_log_glob()))
 
     # 终端汇总
     print("\n========== 汇总 ==========")
-    print("{:<40} {:>8} {:>8} {:>10} {:>10} {:>8}".format(
-        "用例", "并发", "rate", "E2EL", "总吞吐", "状态"))
+    print("{:<40} {:>8} {:>8} {:>10} {:>10} {:>10} {:>8}".format(
+        "用例", "并发", "rate", "E2EL", "总吞吐", "采信率%", "状态"))
     for r in results:
         summary = r["summary"] or {}
-        print("{:<40} {:>8} {:>8} {:>10} {:>10} {:>8}".format(
+        accept = r.get("acceptance_mean")
+        print("{:<40} {:>8} {:>8} {:>10} {:>10} {:>10} {:>8}".format(
             r["case_name"][:40],
             str(r["concurrency"]),
             str(r["request_rate"]),
             str(summary.get("平均E2EL(ms)", "-")),
             str(summary.get("总吞吐(token/s)", "-")),
+            "-" if accept is None else "{:.2f}".format(accept),
             r["status"],
         ))
 
@@ -3520,6 +3682,9 @@ def main():
                     help="performance 通用覆盖: 输出长度；concat/native 各自使用自己的默认值")
     ap.add_argument("--request-rate", type=float, default=None,
                     help="performance 通用覆盖: request_rate；concat/native 各自使用自己的默认值")
+    ap.add_argument("--bs-multiplier", type=int, default=None,
+                    help="performance-c: 数据集条数倍数，bs=并发×该值；默认取 "
+                         "performance-c.dataset_bs_multiplier (10)")
     ap.add_argument("--pfx", type=int, nargs="+", default=None,
                     help="concat 模式: 前缀缓存重复率%% 列表；native_multiturn 忽略")
     ap.add_argument("--dataset-type", dest="dataset_type", nargs="+", default=None,
@@ -3535,6 +3700,9 @@ def main():
     ap.add_argument("--skip-run", action="store_true", help="只解析已有输出, 不重新跑")
     ap.add_argument("--no-warmup", action="store_true",
                     help="关闭压测前的服务预热 (performance-c / performance-n)")
+    ap.add_argument("--acceptance-log-glob", default=None,
+                    help="performance-c: 投机解码接受率日志 glob，默认取 "
+                         "performance-c.acceptance.log_glob")
     ap.add_argument("--warmup-rounds", type=int, default=None,
                     help="预热轮数，每轮并发数等于用例并发；默认取性能配置的 warmup.rounds")
     ap.add_argument("--warmup-concurrency", type=int, default=None,
@@ -3561,6 +3729,8 @@ def main():
     global NATIVE_WORK_DIR, NATIVE_RESULT_DIR, NATIVE_RAW_SHAREGPT_PATH
     global WARMUP_ENABLED_OVERRIDE, WARMUP_ROUNDS_OVERRIDE
     global WARMUP_CONCURRENCY_OVERRIDE, AIS_NUM_WARMUPS_OVERRIDE
+    global ACCEPTANCE_LOG_GLOB_OVERRIDE
+    global DATASET_BS_MULTIPLIER_OVERRIDE
 
     if args.no_warmup:
         WARMUP_ENABLED_OVERRIDE = False
@@ -3570,6 +3740,12 @@ def main():
         WARMUP_CONCURRENCY_OVERRIDE = args.warmup_concurrency
     if args.ais_num_warmups is not None:
         AIS_NUM_WARMUPS_OVERRIDE = args.ais_num_warmups
+    if args.acceptance_log_glob is not None:
+        ACCEPTANCE_LOG_GLOB_OVERRIDE = args.acceptance_log_glob
+    if args.bs_multiplier is not None:
+        if args.bs_multiplier < 1:
+            raise RuntimeError("--bs-multiplier 必须 >= 1")
+        DATASET_BS_MULTIPLIER_OVERRIDE = args.bs_multiplier
 
     if args.native_conversation_count is not None:
         NATIVE_CONVERSATION_COUNT = args.native_conversation_count
